@@ -1,6 +1,7 @@
 module.exports.create = function(port) {
     var express = require('express');
     var _ = require('underscore');
+    var async = require('async');
     var request = require('request');
     
     var app = module.exports = express.createServer();
@@ -13,7 +14,6 @@ module.exports.create = function(port) {
         }
        
         return str;
-    
     }
 
     var dropProbability = 0;
@@ -22,7 +22,7 @@ module.exports.create = function(port) {
     var log = function() {
         var date = "[" + (new Date()).valueOf() + ":" + pad((++index), 6) + "]";
         var args = _.toArray(arguments);
-        args.unshift(prefix + date);
+        args.unshift(prefix + date + "[" + port + "]");
         console.log.apply(console, args);
     }
 
@@ -49,7 +49,8 @@ module.exports.create = function(port) {
         request.post(
           {
             url: host + path,
-            json: content
+            json: content,
+            timeout: 2000
           },
           callback
         );
@@ -287,6 +288,177 @@ module.exports.create = function(port) {
         }
     };
     
+    var initiateAccept = function(instance, proposal, value, originalValue, finalResponse) {
+        // Create a set of tasks, where each task is sending the ACCEPT
+        // message to a specific peer
+        var acceptTasks = {};
+        _.each(senders, function(sender, peer) {
+            log("SEND ACCEPT(", instance, ",", proposal, ",", value, ")", "from", port);
+            acceptTasks[peer] = function(done) {
+                sender(
+                    "/accept",
+                    {
+                        instance: instance,
+                        proposal: proposal,
+                        value: value
+                    },
+                    function(err, response) {
+                        var received = null;
+                        if (err && err.code === "ETIMEDOUT") {
+                            // If we received a timeout, then 
+                            // simply mark this, and keep going
+                            log("RECEIVED accept-response timeout from", peer);
+                            received = "TIMEOUT";
+                        }
+                        else {
+                            // If we received an actual value, then
+                            // simply mark this, and keep going
+                            log("RECEIVED accept-response from", peer);
+                            received = response.body;
+                        }
+                        
+                        done(null, received);
+                    }
+                );
+            };
+        });
+
+        // Execute all the ACCEPT tasks
+        async.parallel(acceptTasks, function(err, accepted) {            
+            // Note how many people promised
+            var numAccepted = 0;
+            _.each(accepted, function(response) {
+                if (response === "TIMEOUT") {
+                    return;
+                }
+                else if (response.accepted) {
+                    numAccepted++;
+                }
+            });
+                
+            // If less than a majority accepted,
+            // then we start over
+            if (numAccepted >= (numPeers / 2 + 1)) {
+                log("majority accepted", accepted);
+            }
+            else {
+                log("majority rejected", accepted);
+                initiateProposal(instance, originalValue, finalResponse);
+            }
+        });
+    };
+    
+    var initiateProposal = function(instance, originalValue, finalResponse) {
+        var value = originalValue;
+        var number = proposalTracker[instance] = (proposalTracker[instance] || 0) + 1;
+        var proposal = {
+            peer: port,
+            number: number
+        };
+        
+        // Create a set of tasks, where each task is sending the PROPOSE
+        // message to a specific peer
+        var proposeTasks = {};
+        _.each(senders, function(sender, peer) {
+            proposeTasks[peer] = function(done) {
+                log("SEND PROPOSE(", instance, ",", proposal, ")", "from", port);
+                sender(
+                    "/propose",
+                    {
+                        instance: instance,
+                        proposal: proposal
+                    },
+                    function(err, response) {
+                        var received = null;
+                        if (err && err.code === "ETIMEDOUT") {
+                            // If we received a timeout, then 
+                            // simply mark this, and keep going
+                            log("RECEIVED propose-response timeout from", peer);
+                            received = "TIMEOUT";
+                        }
+                        else {
+                            // If we received an actual value, then
+                            // simply mark this, and keep going
+                            log("RECEIVED propose-response from", peer);
+                            received = response.body;
+                        }
+                        
+                        done(null, received);
+                    }
+                );
+            };
+        });
+        
+        // Execute all the PROPOSE tasks
+        async.parallel(proposeTasks, function(err, received) {
+            
+            // Keep track of the highest overall proposal
+            var highestProposal = { number: -1, peer: -1};
+            
+            // Keep track of the highest proposal that had a value
+            // attached, and the value
+            var highestProposalWithValue = { number: -1, peer: -1};
+            var newValue = null;
+            
+            // Note how many people promised
+            var numPromised = 0;
+            _.each(received, function(response) {
+                if (response === "TIMEOUT") {
+                    return;
+                }
+                else if (response.promise) {
+                    // OK, they promised to uphold our proposal
+                    numPromised++;
+                    
+                    if (response.value) {
+                        // This response had a value, so we see if it is greater than 
+                        // our previous proposal
+                        if (greaterThan(response.highestProposal, highestProposalWithValue)) {
+                            highestProposalWithValue = response.highestProposal;
+                            value = response.value;
+                            
+                            log("Switching to value", value, "from", highestProposalWithValue.peer);
+                        }
+                    }
+                }
+                else {
+                    // They rejected our proposal, and so we note what proposal
+                    // they return so we can set ours up
+                    if (greaterThan(response.highestProposal, highestProposal)) {
+                        highestProposal = response.highestProposal;
+                    }
+                }
+            });
+                        
+            if (numPromised >= (numPeers / 2 + 1)) {
+                // The proposal was accepted by a majority - hurrah!
+                // We now send the ACCEPT requests to each acceptor.
+                log("Proposal accepted by majority");
+                
+                // Initiate the ACCEPT phase
+                initiateAccept(instance, proposal, value, originalValue, finalResponse);
+                
+                if (value !== originalValue) {
+                    // If we changed values, we still need to try and store
+                    // the original value the user sent us,
+                    // so we simply go again
+                    initiateProposal(currentInstance++, originalValue, finalResponse);
+                }
+            }
+            else {
+                // We failed to update because somebody beat us in terms
+                // of proposal numbers, so we just try again with a higher
+                // proposal number
+                var newNumber = highestProposal.number + 1;
+                
+                log("Proposal rejected, setting new proposal number:", newNumber);
+                proposalTracker[instance] = newNumber;
+                
+                initiateProposal(instance, originalValue, finalResponse);
+            }
+        });
+    };
+    
     // Routes
     
     app.post('/setup', function(req, res) {
@@ -310,168 +482,6 @@ module.exports.create = function(port) {
         res.send();
     });
     
-    var initiateProposal = function(instance, originalValue, finalResponse) {
-        var value = originalValue;
-        var number = proposalTracker[instance] = (proposalTracker[instance] || 0) + 1;
-        var proposal = {
-            peer: port,
-            number: number
-        };
-        
-        // Function to handle when we receive
-        // all accepts or we timeout
-        var acceptedResponses = {};
-        var acceptTimeoutHandle = null;
-        var handleAcceptResponse = function() {
-            clearTimeout(acceptTimeoutHandle);
-            
-            var numAccepted = 0;
-            _.each(acceptedResponses, function(response) {
-                if (response.accepted) {
-                    numAccepted++;
-                } 
-            });
-            
-            if (numAccepted >= (numPeers / 2 + 1)) {
-                log("  ", "majority accepted", acceptedResponses);
-            }
-            else {
-                log("  ", "majority rejected", acceptedResponses);
-                initiateProposal(instance, originalValue, finalResponse);
-            }
-            acceptedResponses = null;
-        };
-        
-        // Function to handle when we receive
-        // all responses or we timeout
-        var timeoutHandle = null;
-        var received = {};
-        var handleProposeResponse = function() {            
-            clearTimeout(timeoutHandle);
-            
-            var highestProposal = { number: -1, peer: -1};
-            var highestProposalWithValue = { number: -1, peer: -1};
-            var receivedValue = null;
-            var numAccepted = 0;
-            _.each(received, function(response) {
-                if (response.promise) {
-                    numAccepted++;
-                    if (response.value) {
-                        if (greaterThan(response.highestProposal, highestProposalWithValue)) {
-                            highestProposalWithValue = response.highestProposal;
-                            receivedValue = response.value;
-                        }
-                    }
-                }
-                else {
-                    if (greaterThan(response.highestProposal, highestProposal)) {
-                        highestProposal = response.highestProposal;
-                    }
-                }
-            });
-                        
-            if (numAccepted >= (numPeers / 2 + 1)) {
-                log("Proposal accepted by majority");
-                
-                if (receivedValue) {
-                    log("Using value", receivedValue, "from", highestProposalWithValue.peer);
-                    highestProposalWithValue.peer = port;
-                    value = receivedValue;
-                }
-                
-                _.each(senders, function(sender) {
-                    log("SEND ACCEPT(", instance, ",", proposal, ",", value, ")", "from", port);
-                    sender(
-                        "/accept",
-                        {
-                            instance: instance,
-                            proposal: proposal,
-                            value: value
-                        },
-                        function(err, response) {
-                            log("BEGIN ACCEPT-RESPONSE from", response.body.peer);
-                            if (acceptedResponses === null) {
-                                log("  ", "ignoring accept-response...");
-                                return;
-                            }
-                            
-                            var acceptResponse = response.body;
-                            acceptedResponses[acceptResponse.peer] = acceptResponse;
-                            log("  ", JSON.stringify(acceptResponse));
-                            
-                            // Find out if everybody has already responded
-                            var acceptedAll = _.keys(acceptedResponses).length === numPeers;
-                            if (acceptedAll) {
-                                console.log()
-                                log("  ", "everybody accept-responded, handling...");
-                                handleAcceptResponse();
-                            }
-                            log("END ACCEPT-RESPONSE");
-                        }
-                    );
-                });
-                
-                var acceptTimeoutHandle = defer(5000, handleAcceptResponse);
-                
-                if (value !== originalValue) {
-                    // If we changed values, we still need to try and store
-                    // the original value the user sent us
-                    initiateProposal(currentInstance++, originalValue, finalResponse);
-                }
-            }
-            else {
-                log("Proposal rejected, setting new proposal number:", ++highestProposal.number);
-                proposalTracker[instance] = highestProposal.number;
-                
-                // We failed to update because somebody beat us in terms
-                // of proposal numbers, so we just try again with a higher
-                // proposal number
-                initiateProposal(instance, originalValue, finalResponse);
-            }
-        };
-        
-        // Send the proposal to each acceptor,
-        // and track who answers
-        _.each(senders, function(sender) {
-            log("SEND PROPOSE(", instance, ",", proposal, ")", "from", port);
-            sender(
-                "/propose",
-                {
-                    instance: instance,
-                    proposal: proposal
-                },
-                function(err, response) {
-                    log("BEGIN PROPOSE-RESPONSE from", response.body.peer);
-                    // If we've already received a majority,
-                    // then simply ignore anything else, it's
-                    // not important
-                    if (received === null) {
-                        log("  ", "ignoring...")
-                        return;
-                    }
-                    
-                    // Store the response
-                    var proposeResponse = response.body;
-                    received[proposeResponse.peer] = proposeResponse;
-                    log("  ", JSON.stringify(proposeResponse));
-                    
-                    // Find out if everybody has already responded
-                    var receivedAll = _.keys(received).length === numPeers;
-                    if (receivedAll) {
-                        log("  ", "everybody propose-responded, handling...");
-                        handleProposeResponse();
-                    }
-                    
-                    log("END PROPOSE-RESPONSE");
-                }
-            );
-        });
-        
-        // We wait for 5 seconds before we timeout
-        // waiting for the propose-response
-        timeoutHandle = defer(5000, handleProposeResponse);
-    };
-    
     app.post('/store', function(req, res) {
         var data = req.body;
         var value = data.value;
@@ -494,7 +504,7 @@ module.exports.create = function(port) {
         var instance = data.instance;
         var proposal = data.proposal;
         
-        log("BEGIN PROPOSE(", instance, ",", proposal, ")");
+        log("RECEIVE PROPOSE(", instance, ",", proposal, ")");
         var result = handlePropose(instance, proposal);
         
         res.json(result); 
@@ -507,7 +517,7 @@ module.exports.create = function(port) {
         var proposal = data.proposal;
         var value = data.value;
         
-        log("BEGIN ACCEPT(", instance, ",", proposal, ",", value, ")");
+        log("RECEIVE ACCEPT(", instance, ",", proposal, ",", value, ")");
         var result = handleAccept(instance, proposal, value);
         
         res.json(result); 
@@ -520,7 +530,7 @@ module.exports.create = function(port) {
         var value = data.value;
         var peer = data.peer;
         
-        log("BEGIN LEARN(", instance, ",", value, ",", peer, ")");
+        log("RECEIVE LEARN(", instance, ",", value, ",", peer, ")");
         var result = handleLearn(instance, value, peer);
         
         res.json(result); 
