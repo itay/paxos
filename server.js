@@ -9,6 +9,10 @@ module.exports.create = function(port) {
     var REQUEST_TIMEOUT  = 2000;
     var NUM_PEERS        = 0;
     var PEERS            = {};
+    var NO_VALUE         = "__0xDEADBEEF";
+    var TEST_VALUE       = "__0xBEEFDEAD";
+    var VALUE_NOT_FOUND  = "NO VALUE FOUND";
+    var LEARN_TIMEOUT    = 2000;
     
     // Create the app server
     var app = module.exports = express.createServer();
@@ -127,9 +131,16 @@ module.exports.create = function(port) {
     
     // For each (name, instance) pair,
     // store what value we have learnt
-    var LEARNT_VALUES = {};    
+    var FULLY_LEARNT_VALUES = {};    
     
-    var tentativeLearnStore = {};   
+    // For each (name, instance) pair,
+    // keep track of how many times we've
+    // learnt some value, so we know
+    // when a majority of acceptors
+    // has accepted a single value
+    var TENTATIVELY_FULLY_LEARNT_VALUES = {};   
+    
+    var FULLY_LEARNT_LISTENERS = {};
     
     // For each name, store what instance
     // number we think we're on
@@ -204,7 +215,7 @@ module.exports.create = function(port) {
                     peer: port,
                     promise: true,
                     highestProposal: proposal,
-                    value: null
+                    value: NO_VALUE
                 };
             }
             else {
@@ -218,7 +229,7 @@ module.exports.create = function(port) {
                     peer: port,
                     promise: false,
                     highestProposal: promisedProposal,
-                    value: null
+                    value: NO_VALUE
                 };
             }
         }
@@ -230,7 +241,7 @@ module.exports.create = function(port) {
             // we've seen
             RECEIVED_PROPOSALS[name][instance] = {
                 proposal: proposal,
-                value: null
+                value: NO_VALUE
             };
             
             log("  ", "first proposal, accepting", proposal);
@@ -240,7 +251,7 @@ module.exports.create = function(port) {
                 peer: port,
                 promise: true,
                 highestProposal: proposal,
-                value: null
+                value: NO_VALUE
             };
         }
     };
@@ -301,10 +312,10 @@ module.exports.create = function(port) {
     };
     
     var handleLearn = function(name, instance, value, peer) {        
-        if (LEARNT_VALUES[name].hasOwnProperty(instance)) {
+        if (FULLY_LEARNT_VALUES[name].hasOwnProperty(instance)) {
             // We've already fully learned a value,
             // because we received a quorum for it
-            log("  ", "ignoring, previously fully learned:", name, LEARNT_VALUES[name][instance]);
+            log("  ", "ignoring, previously fully learned:", name, FULLY_LEARNT_VALUES[name][instance]);
             return;
         }
         
@@ -313,7 +324,7 @@ module.exports.create = function(port) {
         var numAcceptors = 0;
         
         // Get the learnt information for this particular instance (or initialize it)
-        var learned = tentativeLearnStore[name][instance] = (tentativeLearnStore[name][instance] || {});
+        var learned = TENTATIVELY_FULLY_LEARNT_VALUES[name][instance] = (TENTATIVELY_FULLY_LEARNT_VALUES[name][instance] || {});
         if (learned.hasOwnProperty(value)) {
             // We've already seen this value for this instance, so
             // we just increment the value
@@ -329,7 +340,7 @@ module.exports.create = function(port) {
             // this particular value, so we have now fully
             // learnt it
             log("  ", "fully learned: (", name, ",", instance, ",", value, ")");
-            LEARNT_VALUES[name][instance] = value;
+            FULLY_LEARNT_VALUES[name][instance] = value;
             
             if (instance >= CURRENT_INSTANCE[name]) {
                 // The instance number is higher than the one
@@ -338,6 +349,14 @@ module.exports.create = function(port) {
                 // number to one higher.
                 log("  ", "setting instance:", instance + 1);
                 CURRENT_INSTANCE[name] = instance + 1;
+            }
+            
+            if (FULLY_LEARNT_LISTENERS[name][instance] !== null) {
+                _.each(FULLY_LEARNT_LISTENERS[name][instance], function(listener) {
+                    log("  ", "dispatching to listener");
+                    listener(value); 
+                });
+                FULLY_LEARNT_LISTENERS[name][instance] = null;
             }
         }
     };
@@ -467,7 +486,7 @@ module.exports.create = function(port) {
                     // OK, they promised to uphold our proposal
                     numPromised++;
                     
-                    if (response.value) {
+                    if (response.value !== NO_VALUE) {
                         // This response had a value, so we see if it is greater than 
                         // our previous proposal
                         if (greaterThan(response.highestProposal, highestProposalWithValue)) {
@@ -492,7 +511,8 @@ module.exports.create = function(port) {
                 // We now send the ACCEPT requests to each acceptor.
                 log("Proposal accepted by majority");
                 
-                if (value !== originalValue) {
+                log("VALUES!!", value, originalValue);
+                if (value !== originalValue && originalValue !== TEST_VALUE) {
                     // If we changed values, we still need to try and store
                     // the original value the user sent us,
                     // so we simply go again
@@ -502,6 +522,20 @@ module.exports.create = function(port) {
                     // so that we only respond for the original request coming in from the
                     // client, not for this intermediate value we are storing
                     finalResponse = function() {};
+                }
+                else if (value !== originalValue && originalValue === TEST_VALUE) {
+                    // If the original value is null and the proposal was promised,
+                    // then we don't want to initiate a new proposal for the TEST_VALUE value,
+                    // and we don't want to do anything for the new value, as we
+                    // will simply learn it
+                    finalResponse = function() {};
+                }
+                else if (originalValue === TEST_VALUE && value === TEST_VALUE) {
+                    // If this is a test value (because we're trying to force a learn cycle),
+                    // and our value was accepted just like that, then we simply
+                    // return that there is no value, and short circuit
+                    finalResponse(null, VALUE_NOT_FOUND);
+                    return;
                 }
                 
                 // Initiate the ACCEPT phase, but if we changed
@@ -528,9 +562,10 @@ module.exports.create = function(port) {
             log("INITIALIZED STORAGE FOR", name);
             RECEIVED_PROPOSALS[name] = {};
             RECEIVED_ACCEPTS[name] = {};
-            LEARNT_VALUES[name] = {};
-            tentativeLearnStore[name] = {};
+            FULLY_LEARNT_VALUES[name] = {};
+            TENTATIVELY_FULLY_LEARNT_VALUES[name] = {};
             CURRENT_INSTANCE[name] = 1;
+            FULLY_LEARNT_LISTENERS[name] = {};
         }
     };
     
@@ -575,16 +610,86 @@ module.exports.create = function(port) {
         var instance = CURRENT_INSTANCE[name]++;
         initiateProposal(name, instance, value, function(err, result) {
             if (err) {
-                res.send(err);
+                res.json(err);
             }
             else {
-                res.send(result);
+                res.json(result);
             }
         });
     });
     
     app.post('/fetch', function(req, res) {
-        res.send(); 
+        var data = req.body;
+        var name = data.name;
+        var instance = data.instance;
+        var isSpecial = data.special;
+        
+        log("Received FETCH(", name, ",", instance, ",", isSpecial, ")");
+        
+        // Initialize our storage for this name
+        initializeStorageForName(name);
+        
+        log("  ", "SPECIAL ERASING");
+        delete FULLY_LEARNT_VALUES[name][instance];
+        delete TENTATIVELY_FULLY_LEARNT_VALUES[name][instance];
+        
+        if (FULLY_LEARNT_VALUES[name][instance] !== null && FULLY_LEARNT_VALUES[name][instance] !== undefined) {
+            log("FETCH SHORTCIRCUIT")
+            // If we have a fully learnt value, we don't need to
+            // do a paxos round 
+            res.json({
+                name: name, 
+                instance: instance, 
+                value: FULLY_LEARNT_VALUES[name][instance]
+            });
+        }
+        else {
+            // We need to queue up a listener when we've fully learnt the 
+            // value
+            var listeners = FULLY_LEARNT_LISTENERS[name][instance] = (FULLY_LEARNT_LISTENERS[name][instance] || []);
+            listeners.push(function(value) {
+                if (res !== null) {
+                    log("FETCH listener invoked!");
+                    res.json({
+                        name: name,
+                        instance: instance,
+                        value: value
+                    });
+                }
+                else {
+                    log("FETCH listener invoked too late!")
+                }
+            });
+            
+            setTimeout(LEARN_TIMEOUT, function() {
+                log("FETCH timeout!");
+                res.json({
+                    name: name,
+                    instance: instance,
+                    fail: true
+                });
+                
+                res = null;
+            })
+            
+            // OK, we don't have a value, so we initiate a round for this
+            // (name, instance) pair.
+            initiateProposal(name, instance, TEST_VALUE, function(err, result) {
+                if (err) {
+                    res.json(err);
+                }
+                else {
+                    if (result === VALUE_NOT_FOUND) {
+                        res.send("NO VALUE", 404)
+                    }
+                    else {
+                        res.send("WTF! " + result, 500);
+                    }
+                }
+                
+                res = null;
+            });
+        }
     });
     
     app.post('/propose', function(req, res) {

@@ -72,16 +72,16 @@ start = function() {
   console.log("----- STARTING");
   
   process.nextTick(function() {
-    senders[startPort + 1](
-      "/store",
-      {
-        name: "itay",
-        value: 500
-      },
-      function(err, response, data) {
-        console.log(new Date(), data);
-      } 
-    );
+    //senders[startPort + 1](
+    //  "/store",
+    //  {
+    //    name: "itay",
+    //    value: 500
+    //  },
+    //  function(err, response, data) {
+    //    console.log(new Date(), data);
+    //  } 
+    //);
     
     process.nextTick(function() {
       senders[startPort + 2](
@@ -91,17 +91,29 @@ start = function() {
           value: 600
         },
         function(err, response, data) {
-          console.log(new Date(), data);
+          console.log(new Date(), "---", data);
           
           
-          senders[startPort + 2](
-            "/store",
+          //senders[startPort + 2](
+          //  "/store",
+          //  {
+          //    name: "itay",
+          //    value: 700
+          //  },
+          //  function(err, response, data) {
+          //    console.log(new Date(), "---", data);
+          //  }
+          //);
+          
+          senders[startPort + 1](
+            "/fetch",
             {
               name: "itay",
-              value: 700
+              instance: 1,
+              special: true
             },
             function(err, response, data) {
-              console.log(new Date(), data);
+              console.log("FETCH", new Date(), "---", data);
             }
           );
         }
