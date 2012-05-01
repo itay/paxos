@@ -1,67 +1,17 @@
 module.exports.create = function(port) {
     var express = require('express');
-    var _ = require('underscore');
-    var async = require('async');
+    var _       = require('underscore');
+    var async   = require('async');
     var request = require('request');
     
+    var DROP_PROBABILITY = 0;
+    var TIMEOUT_ERROR    = "ETIMEDOUT";
+    var REQUEST_TIMEOUT  = 2000;
+    var NUM_PEERS        = 0;
+    var PEERS            = {};
+    
+    // Create the app server
     var app = module.exports = express.createServer();
-    
-    function pad(number, length) {
-       
-        var str = '' + number;
-        while (str.length < length) {
-            str = '0' + str;
-        }
-       
-        return str;
-    }
-
-    var dropProbability = 0;
-    var prefix = "[server:" + port + "]";
-    var index = 0;
-    var log = function() {
-        var date = "[" + (new Date()).toISOString() + ":" + pad((++index), 6) + "]";
-        var args = _.toArray(arguments);
-        args.unshift(prefix + date + "[" + port + "]");
-        console.log.apply(console, args);
-    }
-
-    var shouldDrop = function() {
-        return dropProbability >= random;
-    }
-
-    function dropPacket(req, res, next) {
-      var random = Math.random();
-      if (shouldDrop) {
-        log("Dropping packet on purpose");
-        next(new Error("Dropped packet"));
-      }
-      else {
-        next();
-      }
-    }
-    
-    var numPeers = 0;
-    var senders = {};
-    var createSender = function(port) {
-      var host = "http://localhost:" + port;
-      return function(path, content, callback) {
-        request.post(
-          {
-            url: host + path,
-            json: content,
-            timeout: 2000
-          },
-          callback
-        );
-      };
-    }
-    
-    var defer = function(wait, fn) {
-        return _.delay(fn, wait);
-    }
-    
-    // Configuration
     
     app.configure(function(){
       app.set('views', __dirname + '/views');
@@ -76,7 +26,47 @@ module.exports.create = function(port) {
       app.use(express.errorHandler({ dumpExceptions: true, showStack: true }));
     });
     
-    // Paxos
+    /****** UTILITY FUNCTIONS ******/
+    
+    // Pad a number with preceding zeroes
+    var pad = function(number, length) {
+        var str = '' + number;
+        while (str.length < length) {
+            str = '0' + str;
+        }
+       
+        return str;
+    }
+    
+    // Create a log function that will generate sortable
+    // log data
+    var prefix = "[server:" + port + "]";
+    var index = 0;
+    var log = function() {
+        var date = "[" + (new Date()).toISOString() + ":" + pad((++index), 6) + "]";
+        var args = _.toArray(arguments);
+        args.unshift(prefix + date + "[" + port + "]");
+        console.log.apply(console, args);
+    }
+
+    // Whether or not we should drop a packet
+    var shouldDrop = function() {
+        var random = Math.random();
+        return DROP_PROBABILITY >= random;
+    }
+
+    // Packet dropping middleware
+    function dropPacket(req, res, next) {
+        if (shouldDrop) {
+            log("Dropping packet on purpose");
+            next(new Error("Dropped packet"));
+        }
+        else {
+            next();
+        }
+    }
+    
+    // Figure out if a proposal is greater than another
     var greaterThan = function(left, right) {
         // A proposal is greater than or equal to another if:
         // 1. it is the same (both the number and peer index are equal)
@@ -96,26 +86,71 @@ module.exports.create = function(port) {
         }
     };
     
-    var proposalStore = {};
-    var acceptStore = {};
-    var tentativeLearnStore = {};    
-    var learnStore = {};    
-    var currentInstance = 1;
+    // Create a local version of a peer,
+    // setting up an easy way to send it data
+    // with a default timeout
+    var createPeer = function(port) {
+        var host = "http://localhost:" + port;
+        return {
+            send: function(path, content, callback) {
+                request.post(
+                    {
+                        url: host + path,
+                        json: content,
+                        timeout: REQUEST_TIMEOUT
+                    },
+                    callback
+                );
+            },
+            port: port
+        };
+    }
+    /*******************************/
+    /*******************************/
+    /*******************************/
     
-    var proposalTracker = {};
+    /*******************************/
+    /******* PAXOS FUNCTIONS *******/
+    /*******************************/
+    
+    // Paxos
+    
+    // For each (name, instance) pair,
+    // store the latest proposal we've
+    // promised
+    var RECEIVED_PROPOSALS = {};
+    
+    // For each (name, instance) pair,
+    // store the latest (proposal, value)
+    // we've accepted.
+    var RECEIVED_ACCEPTS = {};
+    
+    // For each (name, instance) pair,
+    // store what value we have learnt
+    var LEARNT_VALUES = {};    
+    
+    var tentativeLearnStore = {};   
+    
+    // For each name, store what instance
+    // number we think we're on
+    var CURRENT_INSTANCE = 1;
+    
+    // For each (name, instance) pair, track
+    // what proposal number we should use next
+    var PROPOSAL_COUNTER = {};
     
     var handlePropose = function(instance, proposal) {
         
-        if (acceptStore.hasOwnProperty(instance)) {            
+        if (RECEIVED_ACCEPTS.hasOwnProperty(instance)) {            
             // We have already accepted something for this
             // instance
-            var accepted = acceptStore[instance];
+            var accepted = RECEIVED_ACCEPTS[instance];
             var acceptedProposal = accepted.proposal;
             var acceptedValue = accepted.value;
             
             // We also need to get our minimum promised proposal
             // number
-            var promisedProposal = proposalStore[instance].proposal;
+            var promisedProposal = RECEIVED_PROPOSALS[instance].proposal;
             
             log("  ", "previously accepted:", promisedProposal, "--", acceptedValue);
             
@@ -126,7 +161,7 @@ module.exports.create = function(port) {
                 
                 // However, we also need to note this new proposal,
                 // because we promised not to accept anything less than it
-                proposalStore[instance].proposal = proposal;
+                RECEIVED_PROPOSALS[instance].proposal = proposal;
                 
                 log("    ", "promising (already accepted)", proposal, " -- ", acceptedValue);
                 return {
@@ -150,17 +185,17 @@ module.exports.create = function(port) {
                 };
             }
         }
-        else if (proposalStore.hasOwnProperty(instance)) {
+        else if (RECEIVED_PROPOSALS.hasOwnProperty(instance)) {
             // We have received a previous proposal for this
             // instance, but we haven't accepted any value yet
-            var promisedProposal = proposalStore[instance].proposal;
+            var promisedProposal = RECEIVED_PROPOSALS[instance].proposal;
             
             log("  ", "previously promised:", promisedProposal);
             if (greaterThan(proposal, promisedProposal)) {
                 // The proposal is igher than our previously
                 // promised proposal, so we promise not to accept
                 // anything higher than it
-                proposalStore[instance].proposal = proposal; 
+                RECEIVED_PROPOSALS[instance].proposal = proposal; 
                 
                 log("    ", "promising", proposal);
                 return {
@@ -190,7 +225,7 @@ module.exports.create = function(port) {
             
             // Store that this is the highest proposal number
             // we've seen
-            proposalStore[instance] = {
+            RECEIVED_PROPOSALS[instance] = {
                 proposal: proposal,
                 value: null
             };
@@ -207,32 +242,32 @@ module.exports.create = function(port) {
     };
     
     var handleAccept = function(instance, proposal, value) {        
-        var promisedProposal = proposalStore[instance].proposal;
+        var promisedProposal = RECEIVED_PROPOSALS[instance].proposal;
         if (greaterThan(proposal, promisedProposal)) {
             // We haven't promised a higher proposal,
             // so we can still accept this request
             log("  ", "beginning to accept");
             
-            if (acceptStore.hasOwnProperty(instance)) {
+            if (RECEIVED_ACCEPTS.hasOwnProperty(instance)) {
                 // We're checking to see if we already accepted
                 // something previously. This is just for logging
                 // purposes
-                var acceptedProposal = acceptStore[instance].proposal;
-                var acceptedValue = acceptStore[instance].value;
+                var acceptedProposal = RECEIVED_ACCEPTS[instance].proposal;
+                var acceptedValue = RECEIVED_ACCEPTS[instance].value;
                 
                 log("  ", "previously accepted:", acceptedProposal, acceptedValue);
             }
             
             // Store the accepted proposal and value
             // in the accept store
-            acceptStore[instance] = {
+            RECEIVED_ACCEPTS[instance] = {
                 proposal: proposal,
                 value: value
             };
             
             // Now we need to send out learn requests
-            _.each(senders, function(sender) {
-                sender(
+            _.each(PEERS, function(peer) {
+                peer.send(
                     "/learn", 
                     {
                         instance: instance,
@@ -261,29 +296,43 @@ module.exports.create = function(port) {
     };
     
     var handleLearn = function(instance, value, peer) {        
-        if (learnStore.hasOwnProperty(instance)) {
+        if (LEARNT_VALUES.hasOwnProperty(instance)) {
             // We've already fully learned a value,
             // because we received a quorum for it
-            log("  ", "ignoring, previously fully learned:", learnStore[instance]);
+            log("  ", "ignoring, previously fully learned:", LEARNT_VALUES[instance]);
             return;
         }
         
+        // Track how many acceptors accepted
+        // a particular value
         var numAcceptors = 0;
+        
+        // Get the learnt information for this particular instance (or initialize it)
         var learned = tentativeLearnStore[instance] = (tentativeLearnStore[instance] || {});
         if (learned.hasOwnProperty(value)) {
+            // We've already seen this value for this instance, so
+            // we just increment the value
             numAcceptors = (++learned[value]);
         }
         else {
+            // First time we've seen this value, so we set it to 1
             numAcceptors = learned[value] = 1;
         }             
         
-        if (numAcceptors >= ((numPeers / 2) + 1)) {
-            log("  ", "fully learned:", value);
-            learnStore[instance] = value;
+        if (numAcceptors >= ((NUM_PEERS / 2) + 1)) {
+            // More than half the acceptors have accepted
+            // this particular value, so we have now fully
+            // learnt it
+            log("  ", "fully learned: (", instance, ",", value, ")");
+            LEARNT_VALUES[instance] = value;
             
-            if (instance >= currentInstance) {
+            if (instance >= CURRENT_INSTANCE) {
+                // The instance number is higher than the one
+                // we have locally, which could happen if we got
+                // out of sync. As such, we set our own instance
+                // number to one higher.
                 log("  ", "setting instance:", instance + 1);
-                currentInstance = instance + 1;
+                CURRENT_INSTANCE = instance + 1;
             }
         }
     };
@@ -292,10 +341,10 @@ module.exports.create = function(port) {
         // Create a set of tasks, where each task is sending the ACCEPT
         // message to a specific peer
         var acceptTasks = {};
-        _.each(senders, function(sender, peer) {
+        _.each(PEERS, function(peer) {
             log("SEND ACCEPT(", instance, ",", proposal, ",", value, ")", "from", port);
-            acceptTasks[peer] = function(done) {
-                sender(
+            acceptTasks[peer.port] = function(done) {
+                peer.send(
                     "/accept",
                     {
                         instance: instance,
@@ -307,13 +356,13 @@ module.exports.create = function(port) {
                         if (err && err.code === "ETIMEDOUT") {
                             // If we received a timeout, then 
                             // simply mark this, and keep going
-                            log("RECEIVED accept-response timeout from", peer);
-                            received = "TIMEOUT";
+                            log("RECEIVED accept-response timeout from", peer.port);
+                            received = TIMEOUT_ERROR;
                         }
                         else {
                             // If we received an actual value, then
                             // simply mark this, and keep going
-                            log("RECEIVED accept-response from", peer);
+                            log("RECEIVED accept-response from", peer.port);
                             received = response.body;
                         }
                         
@@ -328,7 +377,7 @@ module.exports.create = function(port) {
             // Note how many people promised
             var numAccepted = 0;
             _.each(accepted, function(response) {
-                if (response === "TIMEOUT") {
+                if (response === TIMEOUT_ERROR) {
                     return;
                 }
                 else if (response.accepted) {
@@ -338,7 +387,7 @@ module.exports.create = function(port) {
                 
             // If less than a majority accepted,
             // then we start over
-            if (numAccepted >= (numPeers / 2 + 1)) {
+            if (numAccepted >= (NUM_PEERS / 2 + 1)) {
                 log("majority accepted", accepted);
                 finalResponse(null, {accepted: true, instance: instance});
             }
@@ -351,7 +400,7 @@ module.exports.create = function(port) {
     
     var initiateProposal = function(instance, originalValue, finalResponse) {
         var value = originalValue;
-        var number = proposalTracker[instance] = (proposalTracker[instance] || 0) + 1;
+        var number = PROPOSAL_COUNTER[instance] = (PROPOSAL_COUNTER[instance] || 0) + 1;
         var proposal = {
             peer: port,
             number: number
@@ -360,10 +409,12 @@ module.exports.create = function(port) {
         // Create a set of tasks, where each task is sending the PROPOSE
         // message to a specific peer
         var proposeTasks = {};
-        _.each(senders, function(sender, peer) {
-            proposeTasks[peer] = function(done) {
+        console.log(port, PEERS);
+        _.each(PEERS, function(peer) {
+            console.log("peer", peer);
+            proposeTasks[peer.port] = function(done) {
                 log("SEND PROPOSE(", instance, ",", proposal, ")", "from", port);
-                sender(
+                peer.send(
                     "/propose",
                     {
                         instance: instance,
@@ -371,16 +422,16 @@ module.exports.create = function(port) {
                     },
                     function(err, response) {
                         var received = null;
-                        if (err && err.code === "ETIMEDOUT") {
+                        if (err && err.code === TIMEOUT_ERROR) {
                             // If we received a timeout, then 
                             // simply mark this, and keep going
-                            log("RECEIVED propose-response timeout from", peer);
-                            received = "TIMEOUT";
+                            log("RECEIVED propose-response timeout from", peer.port);
+                            received = TIMEOUT_ERROR;
                         }
                         else {
                             // If we received an actual value, then
                             // simply mark this, and keep going
-                            log("RECEIVED propose-response from", peer);
+                            log("RECEIVED propose-response from", peer.port);
                             received = response.body;
                         }
                         
@@ -404,7 +455,7 @@ module.exports.create = function(port) {
             // Note how many people promised
             var numPromised = 0;
             _.each(received, function(response) {
-                if (response === "TIMEOUT") {
+                if (response === TIMEOUT_ERROR) {
                     return;
                 }
                 else if (response.promise) {
@@ -431,7 +482,7 @@ module.exports.create = function(port) {
                 }
             });
                         
-            if (numPromised >= (numPeers / 2 + 1)) {
+            if (numPromised >= (NUM_PEERS / 2 + 1)) {
                 // The proposal was accepted by a majority - hurrah!
                 // We now send the ACCEPT requests to each acceptor.
                 log("Proposal accepted by majority");
@@ -440,7 +491,7 @@ module.exports.create = function(port) {
                     // If we changed values, we still need to try and store
                     // the original value the user sent us,
                     // so we simply go again
-                    initiateProposal(currentInstance++, originalValue, finalResponse);
+                    initiateProposal(CURRENT_INSTANCE++, originalValue, finalResponse);
                     
                     // We reset the final response in the case where the value changed,
                     // so that we only respond for the original request coming in from the
@@ -458,32 +509,36 @@ module.exports.create = function(port) {
                 var newNumber = highestProposal.number + 1;
                 
                 log("Proposal rejected, setting new proposal number:", newNumber);
-                proposalTracker[instance] = newNumber;
+                PROPOSAL_COUNTER[instance] = newNumber;
                 
                 initiateProposal(instance, originalValue, finalResponse);
             }
         });
     };
     
+    /*******************************/
+    /*******************************/
+    /*******************************/
+    
     // Routes
     
     app.post('/setup', function(req, res) {
         log("received SETUP");
-        var peers = req.body.peers;
-        for(var i = 0; i < peers.length; i++) {
-            var port = peers[i];
-            senders[port] = createSender(port);
+        var peerPorts = req.body.peers;
+        for(var i = 0; i < peerPorts.length; i++) {
+            var peerPort = peerPorts[i];
+            PEERS[peerPort] = createPeer(peerPort);
         }
         
         // Store the number of peers
-        numPeers = peers.length;
+        NUM_PEERS = peerPorts.length;
         
         res.send();
     });
     
     app.post('/drop', function(req, res) {
-        log("Drop probability changed from", dropProbability, "to", req.body.dropProbability);
-        dropProbability = req.body.dropProbability;
+        log("Drop probability changed from", DROP_PROBABILITY, "to", req.body.DROP_PROBABILITY);
+        DROP_PROBABILITY = req.body.DROP_PROBABILITY;
         
         res.send();
     });
@@ -495,7 +550,7 @@ module.exports.create = function(port) {
         log("Received STORE(", value, ")");
         
         // Get the next proposal number and build the proposal
-        var instance = currentInstance++;
+        var instance = CURRENT_INSTANCE++;
         initiateProposal(instance, value, function(err, result) {
             if (err) {
                 res.send(err);
