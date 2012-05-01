@@ -20,7 +20,7 @@ module.exports.create = function(port) {
     var prefix = "[server:" + port + "]";
     var index = 0;
     var log = function() {
-        var date = "[" + (new Date()).valueOf() + ":" + pad((++index), 6) + "]";
+        var date = "[" + (new Date()).toISOString() + ":" + pad((++index), 6) + "]";
         var args = _.toArray(arguments);
         args.unshift(prefix + date + "[" + port + "]");
         console.log.apply(console, args);
@@ -340,6 +340,7 @@ module.exports.create = function(port) {
             // then we start over
             if (numAccepted >= (numPeers / 2 + 1)) {
                 log("majority accepted", accepted);
+                finalResponse(null, {accepted: true, instance: instance});
             }
             else {
                 log("majority rejected", accepted);
@@ -435,15 +436,20 @@ module.exports.create = function(port) {
                 // We now send the ACCEPT requests to each acceptor.
                 log("Proposal accepted by majority");
                 
-                // Initiate the ACCEPT phase
-                initiateAccept(instance, proposal, value, originalValue, finalResponse);
-                
                 if (value !== originalValue) {
                     // If we changed values, we still need to try and store
                     // the original value the user sent us,
                     // so we simply go again
                     initiateProposal(currentInstance++, originalValue, finalResponse);
+                    
+                    // We reset the final response in the case where the value changed,
+                    // so that we only respond for the original request coming in from the
+                    // client, not for this intermediate value we are storing
+                    finalResponse = function() {};
                 }
+                
+                // Initiate the ACCEPT phase, but if we changed
+                initiateAccept(instance, proposal, value, originalValue, finalResponse);
             }
             else {
                 // We failed to update because somebody beat us in terms
@@ -490,9 +496,14 @@ module.exports.create = function(port) {
         
         // Get the next proposal number and build the proposal
         var instance = currentInstance++;
-        initiateProposal(instance, value, res);
-        
-        res.send();
+        initiateProposal(instance, value, function(err, result) {
+            if (err) {
+                res.send(err);
+            }
+            else {
+                res.send(result);
+            }
+        });
     });
     
     app.post('/fetch', function(req, res) {

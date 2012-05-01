@@ -76,7 +76,10 @@ start = function() {
       "/store",
       {
         value: 500
-      }  
+      },
+      function(err, response, data) {
+        console.log(new Date(), data);
+      } 
     );
     
     process.nextTick(function() {
@@ -84,7 +87,10 @@ start = function() {
         "/store",
         {
           value: 600
-        }  
+        },
+        function(err, response, data) {
+          console.log(new Date(), data);
+        }
       );
     });
   });
