@@ -133,24 +133,23 @@ module.exports.create = function(port) {
     
     // For each name, store what instance
     // number we think we're on
-    var CURRENT_INSTANCE = 1;
+    var CURRENT_INSTANCE = {};
     
     // For each (name, instance) pair, track
     // what proposal number we should use next
     var PROPOSAL_COUNTER = {};
     
-    var handlePropose = function(instance, proposal) {
-        
-        if (RECEIVED_ACCEPTS.hasOwnProperty(instance)) {            
+    var handlePropose = function(name, instance, proposal) {
+        if (RECEIVED_ACCEPTS[name].hasOwnProperty(instance)) {
             // We have already accepted something for this
             // instance
-            var accepted = RECEIVED_ACCEPTS[instance];
+            var accepted = RECEIVED_ACCEPTS[name][instance];
             var acceptedProposal = accepted.proposal;
             var acceptedValue = accepted.value;
             
             // We also need to get our minimum promised proposal
             // number
-            var promisedProposal = RECEIVED_PROPOSALS[instance].proposal;
+            var promisedProposal = RECEIVED_PROPOSALS[name][instance].proposal;
             
             log("  ", "previously accepted:", promisedProposal, "--", acceptedValue);
             
@@ -161,10 +160,11 @@ module.exports.create = function(port) {
                 
                 // However, we also need to note this new proposal,
                 // because we promised not to accept anything less than it
-                RECEIVED_PROPOSALS[instance].proposal = proposal;
+                RECEIVED_PROPOSALS[name][instance].proposal = proposal;
                 
                 log("    ", "promising (already accepted)", proposal, " -- ", acceptedValue);
                 return {
+                    name: name,
                     peer: port,
                     promise: true,
                     highestProposal: promisedProposal,
@@ -178,6 +178,7 @@ module.exports.create = function(port) {
                 
                 log("    ", "rejecting (already accepted)", promisedProposal, " -- ", acceptedValue);
                 return {
+                    name: name,
                     peer: port,
                     promise: false,
                     highestProposal: promisedProposal,
@@ -185,20 +186,21 @@ module.exports.create = function(port) {
                 };
             }
         }
-        else if (RECEIVED_PROPOSALS.hasOwnProperty(instance)) {
+        else if (RECEIVED_PROPOSALS[name].hasOwnProperty(instance)) {
             // We have received a previous proposal for this
             // instance, but we haven't accepted any value yet
-            var promisedProposal = RECEIVED_PROPOSALS[instance].proposal;
+            var promisedProposal = RECEIVED_PROPOSALS[name][instance].proposal;
             
             log("  ", "previously promised:", promisedProposal);
             if (greaterThan(proposal, promisedProposal)) {
                 // The proposal is igher than our previously
                 // promised proposal, so we promise not to accept
                 // anything higher than it
-                RECEIVED_PROPOSALS[instance].proposal = proposal; 
+                RECEIVED_PROPOSALS[name][instance].proposal = proposal; 
                 
                 log("    ", "promising", proposal);
                 return {
+                    name: name,
                     peer: port,
                     promise: true,
                     highestProposal: proposal,
@@ -212,6 +214,7 @@ module.exports.create = function(port) {
                 
                 log("    ", "rejecting", proposal);
                 return {
+                    name: name,
                     peer: port,
                     promise: false,
                     highestProposal: promisedProposal,
@@ -225,7 +228,7 @@ module.exports.create = function(port) {
             
             // Store that this is the highest proposal number
             // we've seen
-            RECEIVED_PROPOSALS[instance] = {
+            RECEIVED_PROPOSALS[name][instance] = {
                 proposal: proposal,
                 value: null
             };
@@ -233,6 +236,7 @@ module.exports.create = function(port) {
             log("  ", "first proposal, accepting", proposal);
             // And return a promise saying we accept it
             return {
+                name: name,
                 peer: port,
                 promise: true,
                 highestProposal: proposal,
@@ -241,26 +245,26 @@ module.exports.create = function(port) {
         }
     };
     
-    var handleAccept = function(instance, proposal, value) {        
-        var promisedProposal = RECEIVED_PROPOSALS[instance].proposal;
+    var handleAccept = function(name, instance, proposal, value) {        
+        var promisedProposal = RECEIVED_PROPOSALS[name][instance].proposal;
         if (greaterThan(proposal, promisedProposal)) {
             // We haven't promised a higher proposal,
             // so we can still accept this request
             log("  ", "beginning to accept");
             
-            if (RECEIVED_ACCEPTS.hasOwnProperty(instance)) {
+            if (RECEIVED_ACCEPTS[name].hasOwnProperty(instance)) {
                 // We're checking to see if we already accepted
                 // something previously. This is just for logging
                 // purposes
-                var acceptedProposal = RECEIVED_ACCEPTS[instance].proposal;
-                var acceptedValue = RECEIVED_ACCEPTS[instance].value;
+                var acceptedProposal = RECEIVED_ACCEPTS[name][instance].proposal;
+                var acceptedValue = RECEIVED_ACCEPTS[name][instance].value;
                 
                 log("  ", "previously accepted:", acceptedProposal, acceptedValue);
             }
             
             // Store the accepted proposal and value
             // in the accept store
-            RECEIVED_ACCEPTS[instance] = {
+            RECEIVED_ACCEPTS[name][instance] = {
                 proposal: proposal,
                 value: value
             };
@@ -270,6 +274,7 @@ module.exports.create = function(port) {
                 peer.send(
                     "/learn", 
                     {
+                        name: name,
                         instance: instance,
                         value: value,
                         peer: port
@@ -295,11 +300,11 @@ module.exports.create = function(port) {
         
     };
     
-    var handleLearn = function(instance, value, peer) {        
-        if (LEARNT_VALUES.hasOwnProperty(instance)) {
+    var handleLearn = function(name, instance, value, peer) {        
+        if (LEARNT_VALUES[name].hasOwnProperty(instance)) {
             // We've already fully learned a value,
             // because we received a quorum for it
-            log("  ", "ignoring, previously fully learned:", LEARNT_VALUES[instance]);
+            log("  ", "ignoring, previously fully learned:", name, LEARNT_VALUES[name][instance]);
             return;
         }
         
@@ -308,7 +313,7 @@ module.exports.create = function(port) {
         var numAcceptors = 0;
         
         // Get the learnt information for this particular instance (or initialize it)
-        var learned = tentativeLearnStore[instance] = (tentativeLearnStore[instance] || {});
+        var learned = tentativeLearnStore[name][instance] = (tentativeLearnStore[name][instance] || {});
         if (learned.hasOwnProperty(value)) {
             // We've already seen this value for this instance, so
             // we just increment the value
@@ -323,30 +328,31 @@ module.exports.create = function(port) {
             // More than half the acceptors have accepted
             // this particular value, so we have now fully
             // learnt it
-            log("  ", "fully learned: (", instance, ",", value, ")");
-            LEARNT_VALUES[instance] = value;
+            log("  ", "fully learned: (", name, ",", instance, ",", value, ")");
+            LEARNT_VALUES[name][instance] = value;
             
-            if (instance >= CURRENT_INSTANCE) {
+            if (instance >= CURRENT_INSTANCE[name]) {
                 // The instance number is higher than the one
                 // we have locally, which could happen if we got
                 // out of sync. As such, we set our own instance
                 // number to one higher.
                 log("  ", "setting instance:", instance + 1);
-                CURRENT_INSTANCE = instance + 1;
+                CURRENT_INSTANCE[name] = instance + 1;
             }
         }
     };
     
-    var initiateAccept = function(instance, proposal, value, originalValue, finalResponse) {
+    var initiateAccept = function(name, instance, proposal, value, originalValue, finalResponse) {
         // Create a set of tasks, where each task is sending the ACCEPT
         // message to a specific peer
         var acceptTasks = {};
         _.each(PEERS, function(peer) {
-            log("SEND ACCEPT(", instance, ",", proposal, ",", value, ")", "from", port);
+            log("SEND ACCEPT(", name, ",", instance, ",", proposal, ",", value, ")", "from", port);
             acceptTasks[peer.port] = function(done) {
                 peer.send(
                     "/accept",
                     {
+                        name: name,
                         instance: instance,
                         proposal: proposal,
                         value: value
@@ -393,12 +399,12 @@ module.exports.create = function(port) {
             }
             else {
                 log("majority rejected", accepted);
-                initiateProposal(instance, originalValue, finalResponse);
+                initiateProposal(name, instance, originalValue, finalResponse);
             }
         });
     };
     
-    var initiateProposal = function(instance, originalValue, finalResponse) {
+    var initiateProposal = function(name, instance, originalValue, finalResponse) {
         var value = originalValue;
         var number = PROPOSAL_COUNTER[instance] = (PROPOSAL_COUNTER[instance] || 0) + 1;
         var proposal = {
@@ -409,14 +415,13 @@ module.exports.create = function(port) {
         // Create a set of tasks, where each task is sending the PROPOSE
         // message to a specific peer
         var proposeTasks = {};
-        console.log(port, PEERS);
         _.each(PEERS, function(peer) {
-            console.log("peer", peer);
             proposeTasks[peer.port] = function(done) {
-                log("SEND PROPOSE(", instance, ",", proposal, ")", "from", port);
+                log("SEND PROPOSE(", name, ",", instance, ",", proposal, ")", "from", port);
                 peer.send(
                     "/propose",
                     {
+                        name: name,
                         instance: instance,
                         proposal: proposal
                     },
@@ -491,7 +496,7 @@ module.exports.create = function(port) {
                     // If we changed values, we still need to try and store
                     // the original value the user sent us,
                     // so we simply go again
-                    initiateProposal(CURRENT_INSTANCE++, originalValue, finalResponse);
+                    initiateProposal(name, CURRENT_INSTANCE[name]++, originalValue, finalResponse);
                     
                     // We reset the final response in the case where the value changed,
                     // so that we only respond for the original request coming in from the
@@ -500,7 +505,7 @@ module.exports.create = function(port) {
                 }
                 
                 // Initiate the ACCEPT phase, but if we changed
-                initiateAccept(instance, proposal, value, originalValue, finalResponse);
+                initiateAccept(name, instance, proposal, value, originalValue, finalResponse);
             }
             else {
                 // We failed to update because somebody beat us in terms
@@ -511,9 +516,22 @@ module.exports.create = function(port) {
                 log("Proposal rejected, setting new proposal number:", newNumber);
                 PROPOSAL_COUNTER[instance] = newNumber;
                 
-                initiateProposal(instance, originalValue, finalResponse);
+                initiateProposal(name, instance, originalValue, finalResponse);
             }
         });
+    };
+    
+    var initializeStorageForName = function(name) {
+        // If we haven't seen this name before,
+        // then we initialize all our storage for it
+        if (!RECEIVED_PROPOSALS.hasOwnProperty(name)) {
+            log("INITIALIZED STORAGE FOR", name);
+            RECEIVED_PROPOSALS[name] = {};
+            RECEIVED_ACCEPTS[name] = {};
+            LEARNT_VALUES[name] = {};
+            tentativeLearnStore[name] = {};
+            CURRENT_INSTANCE[name] = 1;
+        }
     };
     
     /*******************************/
@@ -545,13 +563,17 @@ module.exports.create = function(port) {
     
     app.post('/store', function(req, res) {
         var data = req.body;
+        var name = data.name;
         var value = data.value;
         
-        log("Received STORE(", value, ")");
+        log("Received STORE(", name, ",", value, ")");
+        
+        // Initialize our storage for this name
+        initializeStorageForName(name);
         
         // Get the next proposal number and build the proposal
-        var instance = CURRENT_INSTANCE++;
-        initiateProposal(instance, value, function(err, result) {
+        var instance = CURRENT_INSTANCE[name]++;
+        initiateProposal(name, instance, value, function(err, result) {
             if (err) {
                 res.send(err);
             }
@@ -567,11 +589,16 @@ module.exports.create = function(port) {
     
     app.post('/propose', function(req, res) {
         var data = req.body;
+        var name = data.name;
         var instance = data.instance;
         var proposal = data.proposal;
         
-        log("RECEIVE PROPOSE(", instance, ",", proposal, ")");
-        var result = handlePropose(instance, proposal);
+        log("RECEIVE PROPOSE(", name, ",", instance, ",", proposal, ")");
+        
+        // Initialize our storage for this name
+        initializeStorageForName(name);
+        
+        var result = handlePropose(name, instance, proposal);
         
         res.json(result); 
         log("END PROPOSE");
@@ -579,12 +606,17 @@ module.exports.create = function(port) {
     
     app.post('/accept', function(req, res) {
         var data = req.body;
+        var name = data.name;
         var instance = data.instance;
         var proposal = data.proposal;
         var value = data.value;
         
-        log("RECEIVE ACCEPT(", instance, ",", proposal, ",", value, ")");
-        var result = handleAccept(instance, proposal, value);
+        log("RECEIVE ACCEPT(", name, ",", instance, ",", proposal, ",", value, ")");
+        
+        // Initialize our storage for this name
+        initializeStorageForName(name);
+        
+        var result = handleAccept(name, instance, proposal, value);
         
         res.json(result); 
         log("END ACCEPT");
@@ -592,12 +624,17 @@ module.exports.create = function(port) {
     
     app.post('/learn', function(req, res) {
         var data = req.body;
+        var name = data.name;
         var instance = data.instance;
         var value = data.value;
         var peer = data.peer;
         
-        log("RECEIVE LEARN(", instance, ",", value, ",", peer, ")");
-        var result = handleLearn(instance, value, peer);
+        log("RECEIVE LEARN(", name, ",", instance, ",", value, ",", peer, ")");
+        
+        // Initialize our storage for this name
+        initializeStorageForName(name);
+        
+        var result = handleLearn(name, instance, value, peer);
         
         res.json(result); 
         

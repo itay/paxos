@@ -75,6 +75,7 @@ start = function() {
     senders[startPort + 1](
       "/store",
       {
+        name: "itay",
         value: 500
       },
       function(err, response, data) {
@@ -86,10 +87,23 @@ start = function() {
       senders[startPort + 2](
         "/store",
         {
+          name: "itay",
           value: 600
         },
         function(err, response, data) {
           console.log(new Date(), data);
+          
+          
+          senders[startPort + 2](
+            "/store",
+            {
+              name: "itay",
+              value: 700
+            },
+            function(err, response, data) {
+              console.log(new Date(), data);
+            }
+          );
         }
       );
     });
