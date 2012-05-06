@@ -12,6 +12,7 @@ var socketio = require('socket.io');
 
 var app = module.exports = express.createServer();
 var io = socketio.listen(app);
+io.set("log level", 0);
 
 // Configuration
 
@@ -74,6 +75,7 @@ var pad = function(number, length) {
     return str;
 }
 
+var numNotStarted = numServers;
 var sockets = [];
 var logs = [];
 var peers = [];
@@ -104,12 +106,16 @@ _.each(_.range(numServers), function(idx) {
   
   io.of("/" + port).on('connection', function (socket) {
     sockets[port] = socket;
+    numNotStarted--;
+    
+    if (numNotStarted === 0) {
+      start();
+    }
   });
 });
 
 io.sockets.on('connection', function (socket) {
   socket.emit("setup", {ports: peers});
-  start();
 });
 
 var start = null;
