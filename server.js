@@ -1,4 +1,4 @@
-module.exports.create = function(port) {
+module.exports.create = function(port, log) {
     var express = require('express');
     var _       = require('underscore');
     var async   = require('async');
@@ -31,27 +31,6 @@ module.exports.create = function(port) {
     });
     
     /****** UTILITY FUNCTIONS ******/
-    
-    // Pad a number with preceding zeroes
-    var pad = function(number, length) {
-        var str = '' + number;
-        while (str.length < length) {
-            str = '0' + str;
-        }
-       
-        return str;
-    }
-    
-    // Create a log function that will generate sortable
-    // log data
-    var prefix = "[server:" + port + "]";
-    var index = 0;
-    var log = function() {
-        var date = "[" + (new Date()).toISOString() + ":" + pad((++index), 6) + "]";
-        var args = _.toArray(arguments);
-        args.unshift(prefix + date + "[" + port + "]");
-        console.log.apply(console, args);
-    }
 
     // Whether or not we should drop a packet
     var shouldDrop = function() {
