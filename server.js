@@ -5,7 +5,9 @@ module.exports.create = function(port, log) {
     var request = require('request');
     
     var DROP_PROBABILITY = 0;
+    var DROPPED_ERROR    = "DROPPEDPACKET";
     var TIMEOUT_ERROR    = "ETIMEDOUT";
+    var PEERS_DOWN       = {accepted: false, message: "PEERS ARE DOWN"};
     var REQUEST_TIMEOUT  = 2000;
     var NUM_PEERS        = 0;
     var PEERS            = {};
@@ -40,9 +42,9 @@ module.exports.create = function(port, log) {
 
     // Packet dropping middleware
     function dropPacket(req, res, next) {
-        if (shouldDrop) {
+        if (shouldDrop()) {
             log("Dropping packet on purpose");
-            next(new Error("Dropped packet"));
+            next(DROPPED_ERROR);
         }
         else {
             next();
@@ -314,7 +316,7 @@ module.exports.create = function(port, log) {
             numAcceptors = learned[value] = 1;
         }             
         
-        if (numAcceptors >= ((NUM_PEERS / 2) + 1)) {
+        if (numAcceptors >= Math.floor((NUM_PEERS / 2) + 1)) {
             // More than half the acceptors have accepted
             // this particular value, so we have now fully
             // learnt it
@@ -357,11 +359,17 @@ module.exports.create = function(port, log) {
                     },
                     function(err, response) {
                         var received = null;
-                        if (err && err.code === "ETIMEDOUT") {
+                        if (err && err.code === TIMEOUT_ERROR) {
                             // If we received a timeout, then 
                             // simply mark this, and keep going
                             log("RECEIVED accept-response timeout from", peer.port);
                             received = TIMEOUT_ERROR;
+                        }
+                        else if (response.body.error === DROPPED_ERROR) {
+                            // If we received a drop message response,
+                            // then simply mark this, and keep going
+                            log("RECEIVED accept-response drop from", peer.port);
+                            received = DROPPED_ERROR;
                         }
                         else {
                             // If we received an actual value, then
@@ -380,8 +388,13 @@ module.exports.create = function(port, log) {
         async.parallel(acceptTasks, function(err, accepted) {            
             // Note how many people promised
             var numAccepted = 0;
+            var numPeersDown = 0;
             _.each(accepted, function(response) {
-                if (response === TIMEOUT_ERROR) {
+                if (response === TIMEOUT_ERROR || response === DROPPED_ERROR) {
+                    // Let's count how many people died on us, so we know
+                    // whether we should keep trying or if this is a catastrophic
+                    // failure
+                    numPeersDown++;
                     return;
                 }
                 else if (response.accepted) {
@@ -391,9 +404,15 @@ module.exports.create = function(port, log) {
                 
             // If less than a majority accepted,
             // then we start over
-            if (numAccepted >= (NUM_PEERS / 2 + 1)) {
+            if (numAccepted >= Math.floor(NUM_PEERS / 2 + 1)) {
                 log("majority accepted", accepted);
                 finalResponse(null, {accepted: true, instance: instance});
+            }
+            else if (numPeersDown >= Math.floor(NUM_PEERS / 2 + 1)) {
+                // This is a catastrophic failure, let's cut our losses
+                // More than half our peers seem to be down, so we just
+                // respond to the client immediately
+                finalResponse(PEERS_DOWN);
             }
             else {
                 log("majority rejected", accepted);
@@ -431,6 +450,12 @@ module.exports.create = function(port, log) {
                             log("RECEIVED propose-response timeout from", peer.port);
                             received = TIMEOUT_ERROR;
                         }
+                        else if (response.body.error === DROPPED_ERROR) {
+                            // If we received a drop message response,
+                            // then simply mark this, and keep going
+                            log("RECEIVED propose-response drop from", peer.port);
+                            received = DROPPED_ERROR;
+                        }
                         else {
                             // If we received an actual value, then
                             // simply mark this, and keep going
@@ -457,8 +482,13 @@ module.exports.create = function(port, log) {
             
             // Note how many people promised
             var numPromised = 0;
+            var numPeersDown = 0;
             _.each(received, function(response) {
-                if (response === TIMEOUT_ERROR) {
+                if (response === TIMEOUT_ERROR || response === DROPPED_ERROR) {
+                    // Let's count how many people died on us, so we know
+                    // whether we should keep trying or if this is a catastrophic
+                    // failure
+                    numPeersDown++;
                     return;
                 }
                 else if (response.promise) {
@@ -479,18 +509,18 @@ module.exports.create = function(port, log) {
                 else {
                     // They rejected our proposal, and so we note what proposal
                     // they return so we can set ours up
+                    console.log(response);
                     if (greaterThan(response.highestProposal, highestProposal)) {
                         highestProposal = response.highestProposal;
                     }
                 }
             });
-                        
-            if (numPromised >= (NUM_PEERS / 2 + 1)) {
+            
+            if (numPromised >= Math.floor(NUM_PEERS / 2 + 1)) {
                 // The proposal was accepted by a majority - hurrah!
                 // We now send the ACCEPT requests to each acceptor.
                 log("Proposal accepted by majority");
                 
-                log("VALUES!!", value, originalValue);
                 if (value !== originalValue && originalValue !== TEST_VALUE) {
                     // If we changed values, we still need to try and store
                     // the original value the user sent us,
@@ -519,6 +549,12 @@ module.exports.create = function(port, log) {
                 
                 // Initiate the ACCEPT phase, but if we changed
                 initiateAccept(name, instance, proposal, value, originalValue, finalResponse);
+            }
+            else if (numPeersDown >= Math.floor(NUM_PEERS / 2 + 1)) {
+                // This is a catastrophic failure, let's cut our losses
+                // More than half our peers seem to be down, so we just
+                // respond to the client immediately
+                finalResponse(PEERS_DOWN);
             }
             else {
                 // We failed to update because somebody beat us in terms
@@ -569,8 +605,8 @@ module.exports.create = function(port, log) {
     });
     
     app.post('/drop', function(req, res) {
-        log("Drop probability changed from", DROP_PROBABILITY, "to", req.body.DROP_PROBABILITY);
-        DROP_PROBABILITY = req.body.DROP_PROBABILITY;
+        log("Drop probability changed from", DROP_PROBABILITY, "to", req.body.probability);
+        DROP_PROBABILITY = req.body.probability;
         
         res.send();
     });
@@ -589,6 +625,11 @@ module.exports.create = function(port, log) {
         var instance = CURRENT_INSTANCE[name]++;
         initiateProposal(name, instance, value, function(err, result) {
             if (err) {
+                // If there was an error, let's make it as if this never
+                // never happened
+                CURRENT_INSTANCE[name]--;
+                delete PROPOSAL_COUNTER[name];
+                
                 res.json(err);
             }
             else {
@@ -630,6 +671,7 @@ module.exports.create = function(port, log) {
                 if (res !== null) {
                     log("FETCH listener invoked!");
                     res.json({
+                        found: true,
                         name: name,
                         instance: instance,
                         value: value
@@ -643,9 +685,10 @@ module.exports.create = function(port, log) {
             setTimeout(LEARN_TIMEOUT, function() {
                 log("FETCH timeout!");
                 res.json({
+                    found: false,
                     name: name,
                     instance: instance,
-                    fail: true
+                    message: "Timeout"
                 });
                 
                 res = null;
@@ -659,10 +702,10 @@ module.exports.create = function(port, log) {
                 }
                 else {
                     if (result === VALUE_NOT_FOUND) {
-                        res.send("NO VALUE", 404)
+                        res.send({found: false}, 404)
                     }
                     else {
-                        res.send("WTF! " + result, 500);
+                        res.send({found: false, message: "WTF: " + result}, 500);
                     }
                 }
                 
@@ -671,7 +714,7 @@ module.exports.create = function(port, log) {
         }
     });
     
-    app.post('/propose', function(req, res) {
+    app.post('/propose', dropPacket, function(req, res) {
         var data = req.body;
         var name = data.name;
         var instance = data.instance;
@@ -688,7 +731,7 @@ module.exports.create = function(port, log) {
         log("END PROPOSE");
     });
     
-    app.post('/accept', function(req, res) {
+    app.post('/accept', dropPacket, function(req, res) {
         var data = req.body;
         var name = data.name;
         var instance = data.instance;
@@ -706,7 +749,7 @@ module.exports.create = function(port, log) {
         log("END ACCEPT");
     });
     
-    app.post('/learn', function(req, res) {
+    app.post('/learn', dropPacket, function(req, res) {
         var data = req.body;
         var name = data.name;
         var instance = data.instance;
