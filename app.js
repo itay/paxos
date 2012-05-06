@@ -104,14 +104,58 @@ _.each(_.range(numServers), function(idx) {
   
   servers.create(port, log);
   
-  io.of("/" + port).on('connection', function (socket) {
-    sockets[port] = socket;
-    numNotStarted--;
-    
-    if (numNotStarted === 0) {
-      start();
-    }
-  });
+  io.of("/" + port)
+    .on('connection', function (socket) {
+      sockets[port] = socket;
+      numNotStarted--;
+      
+      if (numNotStarted === 0) {
+        //start();
+      }
+      
+      socket.on('store', function(data, fn) {
+        senders[port](
+          "/store",
+          data,
+          function(err, response, data) {
+            console.log(new Date(), data);
+            fn(data);
+          }
+        );
+      });
+      
+      socket.on('fetch', function(data, fn) {
+        senders[port](
+          "/fetch",
+          data,
+          function(err, response, data) {
+            console.log(new Date(), data);
+            fn(data);
+          }
+        );
+      });
+      
+      socket.on('probability', function(probability) {
+        senders[port](
+          "/drop",
+          {probability: probability}
+        );
+      });
+      
+      socket.on('kill', function() {
+        senders[port](
+          "/drop",
+          {probability: 1.0}
+        );
+      });
+      
+      socket.on('revive', function() {
+        senders[port](
+          "/drop",
+          {probability: 0.0}
+        );
+      });
+    })
 });
 
 io.sockets.on('connection', function (socket) {
