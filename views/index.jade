@@ -1,2 +1,19 @@
 h1= title
-p Welcome to #{title}
+script(src="/socket.io/socket.io.js")
+
+script
+  var socket = io.connect('http://localhost');
+  var portSockets = {};
+  socket.on('setup', function (data) {
+    var ports = data.ports;
+    for(var i = 0; i < ports.length; i++) {
+        var port = ports[i];
+        var portSocket = io.connect("/" + port);
+        
+        portSocket.on('log', function(args) {
+            console.log.apply(console, args); 
+        });
+        
+        portSockets[port] = portSocket;
+    }
+  });

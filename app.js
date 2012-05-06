@@ -8,14 +8,27 @@ var config = require('./config.json');
 var servers = require('./server');
 var request = require('request');
 var _ = require('underscore');
+var socketio = require('socket.io');
 
 var app = module.exports = express.createServer();
+var io = socketio.listen(app);
 
 // Configuration
 
 app.configure(function(){
   app.set('views', __dirname + '/views');
   app.set('view engine', 'jade');
+  app.set('view options', {
+    layout: false
+  });
+  // make a custom html template
+  app.register('.html', {
+    compile: function(str, options){
+      return function(locals){
+        return str;
+      };
+    }
+  });
   app.use(express.bodyParser());
   app.use(express.methodOverride());
   app.use(app.router);
@@ -28,6 +41,10 @@ app.configure('development', function(){
 
 var numServers = config.numServers;
 var startPort = config.startPort;
+
+app.get('/', function(req, res){
+  res.render('index.html');
+});
 
 app.listen(startPort, function(){
   console.log("Express server listening on port %d in %s mode", app.address().port, app.settings.env);
@@ -57,6 +74,7 @@ var pad = function(number, length) {
     return str;
 }
 
+var sockets = [];
 var logs = [];
 var peers = [];
 _.each(_.range(numServers), function(idx) {
@@ -72,12 +90,26 @@ _.each(_.range(numServers), function(idx) {
       var args = _.toArray(arguments);
       args.unshift(prefix + date + "[" + port + "]");
       console.log.apply(console, args);
+      
+      if(sockets[port]) {
+        var socket = sockets[port];
+        socket.emit("log", args);
+      }
   }
   
   peers.push(port);
   logs.push(log);
   
   servers.create(port, log);
+  
+  io.of("/" + port).on('connection', function (socket) {
+    sockets[port] = socket;
+  });
+});
+
+io.sockets.on('connection', function (socket) {
+  socket.emit("setup", {ports: peers});
+  start();
 });
 
 var start = null;
@@ -89,7 +121,7 @@ for(var port in senders) {
   sender("/setup", {peers: peers}, function(err, res) {
     setupCompleteCount--;
     if(setupCompleteCount === 0) {
-      start();
+      
     }
   });
 }
