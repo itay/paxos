@@ -736,7 +736,13 @@ module.exports.create = function(port, log) {
         
         var result = handlePropose(name, instance, proposal);
         
-        res.json(result); 
+        if (shouldDrop()) {
+            log("Dropping packet on purpose");
+            throw DROPPED_ERROR;
+        }
+        else {
+            res.json(result);
+        }
         log("END PROPOSE");
     });
     
@@ -754,7 +760,14 @@ module.exports.create = function(port, log) {
         
         var result = handleAccept(name, instance, proposal, value);
         
-        res.json(result); 
+        if (shouldDrop()) {
+            log("Dropping packet on purpose");
+            throw DROPPED_ERROR;
+        }
+        else {
+            res.json(result);
+        }
+        
         log("END ACCEPT");
     });
     
@@ -772,7 +785,13 @@ module.exports.create = function(port, log) {
         
         var result = handleLearn(name, instance, value, peer);
         
-        res.json(result); 
+        if (shouldDrop()) {
+            log("Dropping packet on purpose");
+            throw DROPPED_ERROR;
+        }
+        else {
+            res.json(result);
+        }
         
         log("END LEARN");
     });
