@@ -84,7 +84,16 @@ module.exports.create = function(port, log) {
                         json: content,
                         timeout: REQUEST_TIMEOUT
                     },
-                    callback
+                    function(err, response) {
+                        callback = callback || function() {};
+                        if(shouldDrop()) {
+                            log("Dropping packet on purpose");
+                            callback(null, {body: {error: DROPPED_ERROR}});
+                        }
+                        else {
+                            callback(err, response);
+                        }
+                    }
                 );
             },
             port: port
@@ -692,7 +701,7 @@ module.exports.create = function(port, log) {
                 });
                 
                 res = null;
-            })
+            });
             
             // OK, we don't have a value, so we initiate a round for this
             // (name, instance) pair.
