@@ -4,7 +4,7 @@ module.exports.create = function(port, log) {
     var async   = require('async');
     var request = require('request');
     
-    var DROP_PROBABILITY = 0;
+    var DROP_PROBABILITY = 0.0;
     var DROPPED_ERROR    = "DROPPEDPACKET";
     var TIMEOUT_ERROR    = "ETIMEDOUT";
     var PEERS_DOWN       = {accepted: false, message: "PEERS ARE DOWN"};
@@ -651,16 +651,11 @@ module.exports.create = function(port, log) {
         var data = req.body;
         var name = data.name;
         var instance = data.instance;
-        var isSpecial = data.special;
         
-        log("Received FETCH(", name, ",", instance, ",", isSpecial, ")");
+        log("Received FETCH(", name, ",", instance, ")");
         
         // Initialize our storage for this name
         initializeStorageForName(name);
-        
-        log("  ", "SPECIAL ERASING");
-        delete FULLY_LEARNT_VALUES[name][instance];
-        delete TENTATIVELY_FULLY_LEARNT_VALUES[name][instance];
         
         if (FULLY_LEARNT_VALUES[name][instance] !== null && FULLY_LEARNT_VALUES[name][instance] !== undefined) {
             log("FETCH SHORTCIRCUIT")
