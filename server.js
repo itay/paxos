@@ -13,6 +13,7 @@ module.exports.create = function(port, log) {
     var PEERS            = {};
     var NO_VALUE         = "__0xDEADBEEF";
     var TEST_VALUE       = "__0xBEEFDEAD";
+    var NOT_IN_EPOCH     = "__NOT_IN_EPOCH";
     var VALUE_NOT_FOUND  = "NO VALUE FOUND";
     var LEARN_TIMEOUT    = 2000;
     
@@ -57,6 +58,11 @@ module.exports.create = function(port, log) {
         // 1. it is the same (both the number and peer index are equal)
         // 2. The number is higher
         // 3. The number is the same but the peer is higher
+         
+        if (left.epoch < right.epoch) {
+            return false;
+        }
+        
         if (left.number > right.number) {
             return true;
         }
@@ -140,7 +146,45 @@ module.exports.create = function(port, log) {
     // what proposal number we should use next
     var PROPOSAL_COUNTER = {};
     
+    // Store whether a particular epoch is closed
+    var EPOCH_CLOSED = {};
+    
+    var GET_CURRENT_EPOCH = function() {
+        var epochs = _.keys(FULLY_LEARNT_VALUES["_EPOCH"]) || [];
+        epochs.sort();
+        
+        return epochs[epochs.length - 1];
+    };
+    
+    var GET_PEERS = function() {
+        var currentEpoch = GET_CURRENT_EPOCH();
+        var peers = FULLY_LEARNT_VALUES["_EPOCH"][currentEpoch];
+        
+        return peers;
+    };
+    
+    var GET_NUM_PEERS = function() { 
+        var peers = GET_PEERS() || {};
+        return _.keys(peers).length;
+    };
+    
+    var IS_IN_EPOCH = function(peer) { 
+        var peers = GET_PEERS();
+
+        return _.keys(peers).indexOf(peer + '') >= 0;
+    };
+    
     var handlePropose = function(name, instance, proposal) {
+        if (!IS_IN_EPOCH(proposal.peer)) {
+            log("  ", proposal.peer, "not in epoch");
+            return {
+                name: name,
+                peer: port,
+                promise: false,
+                epoch: false
+            };
+        }
+        
         if (RECEIVED_ACCEPTS[name].hasOwnProperty(instance)) {
             // We have already accepted something for this
             // instance
@@ -168,6 +212,7 @@ module.exports.create = function(port, log) {
                     name: name,
                     peer: port,
                     promise: true,
+                    epoch: true,
                     highestProposal: promisedProposal,
                     value: acceptedValue
                 };
@@ -182,6 +227,7 @@ module.exports.create = function(port, log) {
                     name: name,
                     peer: port,
                     promise: false,
+                    epoch: true,
                     highestProposal: promisedProposal,
                     value: acceptedValue
                 };
@@ -204,6 +250,7 @@ module.exports.create = function(port, log) {
                     name: name,
                     peer: port,
                     promise: true,
+                    epoch: true,
                     highestProposal: proposal,
                     value: NO_VALUE
                 };
@@ -218,6 +265,7 @@ module.exports.create = function(port, log) {
                     name: name,
                     peer: port,
                     promise: false,
+                    epoch: true,
                     highestProposal: promisedProposal,
                     value: NO_VALUE
                 };
@@ -240,6 +288,7 @@ module.exports.create = function(port, log) {
                 name: name,
                 peer: port,
                 promise: true,
+                epoch: true,
                 highestProposal: proposal,
                 value: NO_VALUE
             };
@@ -247,6 +296,15 @@ module.exports.create = function(port, log) {
     };
     
     var handleAccept = function(name, instance, proposal, value) {        
+        if (!IS_IN_EPOCH(proposal.peer)) {
+            log("  ", proposal.peer, "not in epoch");
+            return {
+                accepted: false,
+                epoch: false,
+                peer: port
+            };
+        }
+        
         var promisedProposal = RECEIVED_PROPOSALS[name][instance].proposal;
         if (greaterThan(proposal, promisedProposal)) {
             // We haven't promised a higher proposal,
@@ -271,7 +329,7 @@ module.exports.create = function(port, log) {
             };
             
             // Now we need to send out learn requests
-            _.each(PEERS, function(peer) {
+            _.each(GET_PEERS(), function(peer) {
                 peer.send(
                     "/learn", 
                     {
@@ -284,6 +342,7 @@ module.exports.create = function(port, log) {
             });
             return {
                 accepted: true,
+                epoch: true,
                 peer: port
             };
             
@@ -295,6 +354,7 @@ module.exports.create = function(port, log) {
             log("  ", "rejected:", promisedProposal);
             return {
                 accepted: false,
+                epoch: true,
                 peer: port
             };
         }
@@ -325,7 +385,7 @@ module.exports.create = function(port, log) {
             numAcceptors = learned[value] = 1;
         }             
         
-        if (numAcceptors >= Math.floor((NUM_PEERS / 2) + 1)) {
+        if (numAcceptors >= Math.floor((GET_NUM_PEERS() / 2) + 1)) {
             // More than half the acceptors have accepted
             // this particular value, so we have now fully
             // learnt it
@@ -355,7 +415,7 @@ module.exports.create = function(port, log) {
         // Create a set of tasks, where each task is sending the ACCEPT
         // message to a specific peer
         var acceptTasks = {};
-        _.each(PEERS, function(peer) {
+        _.each(GET_PEERS(), function(peer) {
             log("SEND ACCEPT(", name, ",", instance, ",", proposal, ",", value, ")", "from", port);
             acceptTasks[peer.port] = function(done) {
                 peer.send(
@@ -413,11 +473,11 @@ module.exports.create = function(port, log) {
                 
             // If less than a majority accepted,
             // then we start over
-            if (numAccepted >= Math.floor(NUM_PEERS / 2 + 1)) {
+            if (numAccepted >= Math.floor(GET_NUM_PEERS() / 2 + 1)) {
                 log("majority accepted", accepted);
                 finalResponse(null, {accepted: true, instance: instance});
             }
-            else if (numPeersDown >= Math.floor(NUM_PEERS / 2 + 1)) {
+            else if (numPeersDown >= Math.floor(GET_NUM_PEERS() / 2 + 1)) {
                 // This is a catastrophic failure, let's cut our losses
                 // More than half our peers seem to be down, so we just
                 // respond to the client immediately
@@ -441,7 +501,7 @@ module.exports.create = function(port, log) {
         // Create a set of tasks, where each task is sending the PROPOSE
         // message to a specific peer
         var proposeTasks = {};
-        _.each(PEERS, function(peer) {
+        _.each(GET_PEERS(), function(peer) {
             proposeTasks[peer.port] = function(done) {
                 log("SEND PROPOSE(", name, ",", instance, ",", proposal, ")", "from", port);
                 peer.send(
@@ -525,7 +585,7 @@ module.exports.create = function(port, log) {
                 }
             });
             
-            if (numPromised >= Math.floor(NUM_PEERS / 2 + 1)) {
+            if (numPromised >= Math.floor(GET_NUM_PEERS() / 2 + 1)) {
                 // The proposal was accepted by a majority - hurrah!
                 // We now send the ACCEPT requests to each acceptor.
                 log("Proposal accepted by majority");
@@ -559,7 +619,7 @@ module.exports.create = function(port, log) {
                 // Initiate the ACCEPT phase, but if we changed
                 initiateAccept(name, instance, proposal, value, originalValue, finalResponse);
             }
-            else if (numPeersDown >= Math.floor(NUM_PEERS / 2 + 1)) {
+            else if (numPeersDown >= Math.floor(GET_NUM_PEERS() / 2 + 1)) {
                 // This is a catastrophic failure, let's cut our losses
                 // More than half our peers seem to be down, so we just
                 // respond to the client immediately
@@ -602,13 +662,18 @@ module.exports.create = function(port, log) {
     app.post('/setup', function(req, res) {
         log("received SETUP");
         var peerPorts = req.body.peers;
+        var peers = {};
         for(var i = 0; i < peerPorts.length; i++) {
             var peerPort = peerPorts[i];
             PEERS[peerPort] = createPeer(peerPort);
+            peers[peerPort] = createPeer(peerPort);
         }
         
         // Store the number of peers
         NUM_PEERS = peerPorts.length;
+        
+        initializeStorageForName("_EPOCH");
+        FULLY_LEARNT_VALUES["_EPOCH"][0] = peers;
         
         res.send();
     });
@@ -662,6 +727,7 @@ module.exports.create = function(port, log) {
             // If we have a fully learnt value, we don't need to
             // do a paxos round 
             res.json({
+                found: true,
                 name: name, 
                 instance: instance, 
                 value: FULLY_LEARNT_VALUES[name][instance]
