@@ -921,8 +921,8 @@ module.exports.create = function(port, log) {
         
         log("RECEIVE PROPOSE(", name, ",", instance, ",", proposal, ")");
         
-        if (name === "_EPOCH") {
-            log("  ", "closing down epoch");
+        if (name === "_EPOCH" && !EPOCH_CLOSED[GET_CURRENT_EPOCH()]) {
+            log("  ", "closing down epoch", GET_CURRENT_EPOCH());
             EPOCH_CLOSED[GET_CURRENT_EPOCH()] = true;
         }
         
@@ -950,8 +950,8 @@ module.exports.create = function(port, log) {
         
         log("RECEIVE ACCEPT(", name, ",", instance, ",", proposal, ",", value, ")");
         
-        if (name === "_EPOCH") {
-            log("  ", "closing down epoch");
+        if (name === "_EPOCH" && !EPOCH_CLOSED[GET_CURRENT_EPOCH()]) {
+            log("  ", "closing down epoch", GET_CURRENT_EPOCH());
             EPOCH_CLOSED[GET_CURRENT_EPOCH()] = true;
         }
         
