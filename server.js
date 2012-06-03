@@ -174,6 +174,11 @@ module.exports.create = function(port, log) {
         return _.keys(peers).indexOf(peer + '') >= 0;
     };
     
+    var IS_EPOCH_CLOSED = function() {
+        var currentEpoch = GET_CURRENT_EPOCH();
+        return !!IS_EPOCH_CLOSED[currentEpoch];
+    }
+    
     var handlePropose = function(name, instance, proposal) {
         if (!IS_IN_EPOCH(proposal.peer)) {
             log("  ", proposal.peer, "not in epoch");
@@ -274,6 +279,17 @@ module.exports.create = function(port, log) {
         else {
             // This is a brand new instance for us,
             // so we can do whatever we want
+            
+            // If the epoch is already closed, then we always reject
+            if (IS_EPOCH_CLOSED()) {
+                log("  ", "rejecting proposal because epoch is closed");
+                return {
+                    name: name,
+                    peer: peer,
+                    promise: false,
+                    epoch: false
+                }
+            }
             
             // Store that this is the highest proposal number
             // we've seen
@@ -458,6 +474,7 @@ module.exports.create = function(port, log) {
             // Note how many people promised
             var numAccepted = 0;
             var numPeersDown = 0;
+            var numEpochs = 0;
             _.each(accepted, function(response) {
                 if (response === TIMEOUT_ERROR || response === DROPPED_ERROR) {
                     // Let's count how many people died on us, so we know
@@ -468,6 +485,9 @@ module.exports.create = function(port, log) {
                 }
                 else if (response.accepted) {
                     numAccepted++;
+                }
+                else if (!response.epoch) {
+                    numEpochs++;
                 }
             });
                 
@@ -482,6 +502,9 @@ module.exports.create = function(port, log) {
                 // More than half our peers seem to be down, so we just
                 // respond to the client immediately
                 finalResponse(PEERS_DOWN);
+            }
+            else if (numPeersDown >= Math.floor(GET_NUM_PEERS() / 2 + 1)) {
+                finalResponse(NOT_IN_EPOCH);   
             }
             else {
                 log("majority rejected", accepted);
@@ -552,6 +575,7 @@ module.exports.create = function(port, log) {
             // Note how many people promised
             var numPromised = 0;
             var numPeersDown = 0;
+            var numEpochs = 0;
             _.each(received, function(response) {
                 if (response === TIMEOUT_ERROR || response === DROPPED_ERROR) {
                     // Let's count how many people died on us, so we know
@@ -574,6 +598,11 @@ module.exports.create = function(port, log) {
                             log("Switching to value", value, "from", highestProposalWithValue.peer);
                         }
                     }
+                }
+                else if (!response.epoch) {
+                    // Our proposal was rejected because of epoch differences,
+                    // so we simply do nothing with this resposne.
+                    numEpochs++;
                 }
                 else {
                     // They rejected our proposal, and so we note what proposal
@@ -624,6 +653,11 @@ module.exports.create = function(port, log) {
                 // More than half our peers seem to be down, so we just
                 // respond to the client immediately
                 finalResponse(PEERS_DOWN);
+            }
+            else if (numEpochs >= Math.floor(GET_NUM_PEERS() / 2 + 1)) {
+                // More than half the responses were due to out of epoch 
+                // cases, so we return that
+                finalResponse(NOT_IN_EPOCH);
             }
             else {
                 // We failed to update because somebody beat us in terms
