@@ -79,8 +79,8 @@ var numNotStarted = numServers;
 var sockets = [];
 var logs = [];
 var peers = [];
-_.each(_.range(numServers), function(idx) {
-  var port = startPort + idx + 1;
+
+var createServer = function(port) {
   senders[port] = createSender(port);
   
   // Create a log function that will generate sortable
@@ -156,6 +156,12 @@ _.each(_.range(numServers), function(idx) {
         );
       });
     })
+};
+
+_.each(_.range(numServers), function(idx) {
+  var port = startPort + idx + 1;
+  
+  createServer(port);
 });
 
 io.sockets.on('connection', function (socket) {
@@ -168,11 +174,85 @@ var start = null;
 var setupCompleteCount = numServers;
 for(var port in senders) {
   var sender = senders[port];
-  sender("/setup", {peers: peers}, function(err, res) {
+  sender("/setup", {peers: peers, initialized: true}, function(err, res) {
     setupCompleteCount--;
     if(setupCompleteCount === 0) {
-      
+      start2();
     }
+  });
+}
+
+var addPeer = function(port, joinFromPort, done) {
+  createServer(port);
+  senders[port]("/setup", {peers: peers, initialized: false}, function(err, res) {
+    console.log(" -- PEER", port, "is done setting up");
+    
+    senders[joinFromPort](
+      "/addPeer",
+      {
+        peer: port
+      },
+      function(err, response, data) {
+        console.log(" -- PEER", port, "is joined");
+        if (data) {
+          var epoch = data.instance;
+          senders[port](
+            "/initialize",
+            {
+              epoch: epoch,
+              peers: peers
+            },
+            function() {
+              console.log(" -- AFTER INITIALIZED FOR", port);
+              done();
+            }
+          );
+        }
+      }
+    );
+  });
+};
+
+var start2 = function() {
+  var newPeer = startPort + numServers + 1;
+  numServers++;
+  
+  addPeer(newPeer, peers[0], function() {    
+    senders[startPort + 1](
+      "/store",
+      {
+        name: "itay",
+        value: 600
+      },
+      function(err, response, data) {
+        console.log(new Date(), "---", data);
+      }
+    );
+  });
+  
+  //senders[startPort + 1](
+  //  "/store",
+  //  {
+  //    name: "itay",
+  //    value: 600
+  //  },
+  //  function(err, response, data) {
+  //    console.log("-- STORED", data);
+  //    addPeer(newPeer, peers[0], function() {    
+  //      senders[newPeer](
+  //        "/fetch",
+  //        {name: "itay", instance: 1},
+  //        function(err, response, data) {
+  //          console.log(data);
+  //        }
+  //      );
+  //    });
+  //  }
+  //);
+  
+  var newPeer2 = newPeer + 1;
+  addPeer(newPeer2, peers[1], function() {
+    
   });
 }
 

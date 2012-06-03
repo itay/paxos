@@ -149,6 +149,12 @@ module.exports.create = function(port, log) {
     // Store whether a particular epoch is closed
     var EPOCH_CLOSED = {};
     
+    // Store whether or not we were part of a particular epoch
+    var WAS_IN_EPOCH = {};
+    
+    // Store whether or not we are initialized
+    var INITIALIZED = true;
+    
     var GET_CURRENT_EPOCH = function() {
         var epochs = _.keys(FULLY_LEARNT_VALUES["_EPOCH"]) || [];
         epochs.sort();
@@ -170,17 +176,18 @@ module.exports.create = function(port, log) {
     
     var IS_IN_EPOCH = function(peer) { 
         var peers = GET_PEERS();
-
-        return _.keys(peers).indexOf(peer + '') >= 0;
+        
+        // A peer is not in the epoch if it is not initialized
+        return INITIALIZED && _.keys(peers).indexOf(peer + '') >= 0;
     };
     
     var IS_EPOCH_CLOSED = function() {
         var currentEpoch = GET_CURRENT_EPOCH();
-        return !!IS_EPOCH_CLOSED[currentEpoch];
-    }
+        return !!EPOCH_CLOSED[currentEpoch];
+    };
     
     var handlePropose = function(name, instance, proposal) {
-        if (!IS_IN_EPOCH(proposal.peer)) {
+        if (!WAS_IN_EPOCH[proposal.epoch] || !IS_IN_EPOCH(proposal.peer)) {
             log("  ", proposal.peer, "not in epoch");
             return {
                 name: name,
@@ -281,11 +288,11 @@ module.exports.create = function(port, log) {
             // so we can do whatever we want
             
             // If the epoch is already closed, then we always reject
-            if (IS_EPOCH_CLOSED()) {
+            if (IS_EPOCH_CLOSED() && name !== "_EPOCH") {
                 log("  ", "rejecting proposal because epoch is closed");
                 return {
                     name: name,
-                    peer: peer,
+                    peer: port,
                     promise: false,
                     epoch: false
                 }
@@ -312,7 +319,7 @@ module.exports.create = function(port, log) {
     };
     
     var handleAccept = function(name, instance, proposal, value) {        
-        if (!IS_IN_EPOCH(proposal.peer)) {
+        if (!WAS_IN_EPOCH[proposal.epoch] || !IS_IN_EPOCH(proposal.peer)) {
             log("  ", proposal.peer, "not in epoch");
             return {
                 accepted: false,
@@ -321,7 +328,9 @@ module.exports.create = function(port, log) {
             };
         }
         
+        //console.error(port, arguments);
         var promisedProposal = RECEIVED_PROPOSALS[name][instance].proposal;
+        //console.error("-----");
         if (greaterThan(proposal, promisedProposal)) {
             // We haven't promised a higher proposal,
             // so we can still accept this request
@@ -424,6 +433,32 @@ module.exports.create = function(port, log) {
                 });
                 FULLY_LEARNT_LISTENERS[name][instance] = null;
             }
+            
+            if (name === "_EPOCH") {
+                log("  ", "learnt new epoch, setting up peers");
+                
+                var currentPeers = _.keys(FULLY_LEARNT_VALUES["_EPOCH"][instance-1]);
+                var newPeerSet = currentPeers;
+                if (value.add) {
+                    var newPeer = value.add;
+                    
+                    newPeerSet.push(newPeer);
+                }
+                else {
+                    var peersToRemove = value.remove;
+                    newPeerSet = _.difference(newPeerSet, peersToRemove);
+                }
+                
+                var peers = {};
+                for(var i = 0; i < newPeerSet.length; i++) {
+                    var peerPort = newPeerSet[i];
+                    peers[peerPort] = createPeer(peerPort);
+                }
+                FULLY_LEARNT_VALUES[name][instance] = peers;
+                WAS_IN_EPOCH[instance] = true;
+                
+                log("  ", "new peer set:" , newPeerSet);
+            }
         }
     };
     
@@ -518,7 +553,8 @@ module.exports.create = function(port, log) {
         var number = PROPOSAL_COUNTER[instance] = (PROPOSAL_COUNTER[instance] || 0) + 1;
         var proposal = {
             peer: port,
-            number: number
+            number: number,
+            epoch: GET_CURRENT_EPOCH()
         };
         
         // Create a set of tasks, where each task is sending the PROPOSE
@@ -526,7 +562,7 @@ module.exports.create = function(port, log) {
         var proposeTasks = {};
         _.each(GET_PEERS(), function(peer) {
             proposeTasks[peer.port] = function(done) {
-                log("SEND PROPOSE(", name, ",", instance, ",", proposal, ")", "from", port);
+                log("SEND PROPOSE(", name, ",", instance, ",", proposal, ")", "from", port, "to", peer.port);
                 peer.send(
                     "/propose",
                     {
@@ -699,15 +735,16 @@ module.exports.create = function(port, log) {
         var peers = {};
         for(var i = 0; i < peerPorts.length; i++) {
             var peerPort = peerPorts[i];
-            PEERS[peerPort] = createPeer(peerPort);
             peers[peerPort] = createPeer(peerPort);
         }
         
-        // Store the number of peers
-        NUM_PEERS = peerPorts.length;
-        
         initializeStorageForName("_EPOCH");
         FULLY_LEARNT_VALUES["_EPOCH"][0] = peers;
+        WAS_IN_EPOCH[0] = true;
+        
+        if (!req.body.initialized) {
+            INITIALIZED = false;
+        }
         
         res.send();
     });
@@ -715,6 +752,64 @@ module.exports.create = function(port, log) {
     app.post('/drop', function(req, res) {
         log("Drop probability changed from", DROP_PROBABILITY, "to", req.body.probability);
         DROP_PROBABILITY = req.body.probability;
+        
+        res.send();
+    });
+    
+    app.post('/addPeer', function(req, res) {
+        var data = req.body;
+        var name = "_EPOCH";
+        var peer = data.peer + '';
+        
+        log("Received ADD_PEER(", peer, ")");
+        
+        var peers = _.keys(GET_PEERS());
+        
+        // Mark the current epoch as closed
+        EPOCH_CLOSED[GET_CURRENT_EPOCH()] = true;
+        
+        // Get the next proposal number and build the proposal
+        var instance = CURRENT_INSTANCE[name]++;
+        initiateProposal(name, instance, { add: peer }, function(err, result) {
+            if (err) {
+                // If there was an error, let's make it as if this never
+                // never happened
+                CURRENT_INSTANCE[name]--;
+                delete PROPOSAL_COUNTER[name];
+                
+                res.json(err);
+            }
+            else {
+                res.json(result);
+            }
+        });
+    });
+    
+    app.post('/initialize', function(req, res) {
+        var epoch = req.body.epoch;
+        var peerPorts = req.body.peers;
+        
+        log("INITIALIZING", port, req.body);
+        
+        // Mark us as initialized
+        INITIALIZED = true;
+        
+        // Mark all the epochs before the one we joined in as closed, because
+        // we shouldn't participate in any decisions for epochs prior to us
+        // joining
+        EPOCH_CLOSED = {};
+        for(var i = 0; i < epoch; i++) {
+            EPOCH_CLOSED[i] = true;
+            WAS_IN_EPOCH[i] = false;
+        } 
+        
+        var peers = {};
+        for(var i = 0; i < peerPorts.length; i++) {
+            var peerPort = peerPorts[i];
+            peers[peerPort] = createPeer(peerPort);
+        }
+        FULLY_LEARNT_VALUES["_EPOCH"][epoch] = peers;
+        WAS_IN_EPOCH[epoch] = true;
         
         res.send();
     });
@@ -826,6 +921,11 @@ module.exports.create = function(port, log) {
         
         log("RECEIVE PROPOSE(", name, ",", instance, ",", proposal, ")");
         
+        if (name === "_EPOCH") {
+            log("  ", "closing down epoch");
+            EPOCH_CLOSED[GET_CURRENT_EPOCH()] = true;
+        }
+        
         // Initialize our storage for this name
         initializeStorageForName(name);
         
@@ -849,6 +949,11 @@ module.exports.create = function(port, log) {
         var value = data.value;
         
         log("RECEIVE ACCEPT(", name, ",", instance, ",", proposal, ",", value, ")");
+        
+        if (name === "_EPOCH") {
+            log("  ", "closing down epoch");
+            EPOCH_CLOSED[GET_CURRENT_EPOCH()] = true;
+        }
         
         // Initialize our storage for this name
         initializeStorageForName(name);
