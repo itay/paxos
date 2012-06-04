@@ -420,8 +420,9 @@ module.exports.create = function(port, log, onPeersRemoved) {
                 // we have locally, which could happen if we got
                 // out of sync. As such, we set our own instance
                 // number to one higher.
+                instance = parseInt(instance);
                 log("  ", "setting instance:", instance + 1);
-                CURRENT_INSTANCE[name] = instance + 1;
+                CURRENT_INSTANCE[name] = parseInt(instance) + 1;
             }
             
             if (FULLY_LEARNT_LISTENERS[name][instance] !== null) {
@@ -1047,4 +1048,6 @@ module.exports.create = function(port, log, onPeersRemoved) {
     app.listen(port, function(){
       console.log("Express server listening on port %d in %s mode", app.address().port, app.settings.env);
     });
+    
+    return app;
 }

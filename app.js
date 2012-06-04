@@ -79,6 +79,7 @@ var numNotStarted = numServers;
 var sockets = [];
 var logs = [];
 var peers = [];
+var serverInstances = {};
 
 var createServer = function(port) {
   senders[port] = createSender(port);
@@ -102,7 +103,7 @@ var createServer = function(port) {
   peers.push(port);
   logs.push(log);
   
-  servers.create(port, log, function(ports) { 
+  serverInstances[port] = servers.create(port, log, function(ports) { 
     if (mainSocket) {
       mainSocket.emit("removePeers", { ports: ports } );
     }
@@ -174,12 +175,15 @@ io.sockets.on('connection', function (socket) {
   mainSocket = socket;
   
   socket.on("addPeer", function(data) {
-    console.log("ABC");
-    addPeer(data.peer, peers[0]);
+    if (peers.indexOf(data.peer) < 0) {
+      addPeer(data.peer, peers[0]);
+    }
   });
   
   socket.on("removePeer", function(data) {
-    removePeers([data.peer], peers[0]);
+    if (peers.indexOf(data.peer) >= 0) {
+      removePeers([data.peer], peers[0]);
+    }
   });
 });
 
@@ -206,6 +210,10 @@ var removePeers = function(ports, removeFromPort, done) {
     { peers: ports },
     function(err, response, data) {
       console.log("-- PEERS REMOVED", ports);
+      
+      _.each(serverInstances, function(server) {
+        server.close();
+      });
       
       if (mainSocket) {
         mainSocket.emit("removePeers", {ports: ports});
@@ -248,6 +256,9 @@ var addPeer = function(port, joinFromPort, done) {
               done();
             }
           );
+        }
+        else {
+          console.log(err);
         }
       }
     );
