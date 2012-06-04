@@ -769,10 +769,6 @@ module.exports.create = function(port, log, onPeersRemoved) {
             INITIALIZED = false;
         }
         
-        if (port % 10 === 3) {
-            DROP_PROBABILITY = 1.0;
-        }
-        
         res.send();
     });
     
