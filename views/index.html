@@ -105,6 +105,30 @@
               </div>
               <div class="row">
                 <div class="span12">
+                  <form class="well form-inline" id="add-peer">
+                    <h3>Add Peer</h3>
+                    <div class="control-group">
+                      <input type="text" name="port" class="input-small" placeholder="Port">
+                      <button type="submit" class="btn">Add</button>
+                      <span class="help-inline"></span>
+                    </div>
+                  </form>
+                </div>
+              </div>
+              <div class="row">
+                <div class="span12">
+                  <form class="well form-inline" id="remove-peer">
+                    <h3>Remove Peer</h3>
+                    <div class="control-group">
+                      <input type="text" name="port" class="input-small" placeholder="Port">
+                      <button type="submit" class="btn">Remove</button>
+                      <span class="help-inline"></span>
+                    </div>
+                  </form>
+                </div>
+              </div>
+              <div class="row">
+                <div class="span12">
                   <div class="well">
                     <h3>Log</h3>
                     <pre id="all-log" class="log"></pre>
@@ -141,129 +165,174 @@
     <script>
       var socket = io.connect('http://localhost');
       var portSockets = {};
+      
+      $("#add-peer").submit(function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        var port = $(e.currentTarget).find("input[name='port']").val() || 0;
+        
+        socket.emit("addPeer", {peer: parseInt(port)});
+      });
+      
+      $("#remove-peer").submit(function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        var port = $(e.currentTarget).find("input[name='port']").val() || 0;
+        
+        socket.emit("removePeer", {peer: parseInt(port)});
+      });
+      
+      var addPeer = function(port) {
+        var portSocket = io.connect("/" + port);
+        
+        portSocket.on('log', function(args) {
+            var output = _.map(args, function(arg) {
+               return _.isString(arg) ? arg : JSON.stringify(arg);
+            }).join(" ");
+            
+            var allLog = $("#all-log")
+            var logSoFar = allLog.text();
+            var newLog = logSoFar + "\r\n" + output;
+            allLog.text(newLog.trim());
+            
+            var portLog = $("#port-" + port + "-log");
+            var portLogSoFar = portLog.text();
+            var newPortLog = portLogSoFar + "\r\n" + output;
+            portLog.text(newPortLog.trim());
+            
+            console.log.apply(console, args);
+        });
+        
+        portSockets[port] = portSocket;
+        
+        var nav = $("#peerNav").tmpl({port: port});
+        var content = $("#peerContent").tmpl({port: port});
+        
+        $("#peer-tabs-nav").append($(nav));
+        $("#peer-tabs-content").append($(content));
+        
+        $("#client-submit-" + port).submit(function(e) {
+          e.preventDefault();
+          
+          var name = $("#client-submit-" + port + " input[name='name']").val();
+          var value = $("#client-submit-" + port + " input[name='value']").val();
+          
+          if (!name || !value) {
+            alert("Need to set both name and value");
+            return;
+          }
+          
+          var form = $(this);
+          portSocket.emit("store", {name: name, value: value}, function(resp) {
+            
+            var control = $(".control-group", form);
+            var help = $(".help-inline", form);
+            
+            var text = "";
+            if (resp.accepted) {
+              control.addClass("success");
+              control.removeClass("error");
+              
+              text = "Stored: (" + value + ", " + resp.instance + ")";
+            }
+            else {
+              control.removeClass("success");
+              control.addClass("error");
+              
+              text = "Error: " + JSON.stringify(resp);
+            }
+            
+            help.text(text);
+          });
+        });
+        
+        $("#client-fetch-" + port).submit(function(e) {
+          e.preventDefault();
+          
+          var name = $("#client-fetch-" + port + " input[name='name']").val();
+          var instance = $("#client-fetch-" + port + " input[name='instance']").val();
+          
+          if (!name || !instance) {
+            alert("Need to set both name and instance");
+            return;
+          }
+          
+          var form = $(this);
+          portSocket.emit("fetch", {name: name, instance: instance}, function(resp) {
+            
+            var control = $(".control-group", form);
+            var help = $(".help-inline", form);
+            
+            var text = "";
+            if (resp.found) {
+              control.addClass("success");
+              control.removeClass("error");
+              
+              text = "Found: " + resp.value;
+            }
+            else {
+              control.removeClass("success");
+              control.addClass("error");
+              
+              text = "Not Found";
+              if (resp.message) {
+                text += ": " + resp.message;
+              }
+            }
+            
+            help.text(text);
+          });
+        });
+
+        $("#kill-" + port).click(function(e) {
+          e.preventDefault();
+          
+          portSocket.emit("kill");
+        });
+
+        $("#revive-" + port).click(function(e) {
+          e.preventDefault();
+          
+          portSocket.emit("revive");
+        });
+
+        $("#set-probability-" + port).submit(function(e) {
+          e.preventDefault();
+          
+          var probability = parseFloat($("input[name='probability']", $(this)).val() || 0.0);
+          
+          portSocket.emit("probability", probability);
+        });
+      };
+      
+      var removePeer = function(port) {
+        var href = "#peer-" + port;
+        var id = "peer-" + port;        
+        
+        $("ul.nav a[href='"+href+"']").parent().remove();
+        $("div#"+id).remove();
+        
+        delete portSocket[port];
+      };
+      
+      socket.on('addPeer', function(data) {
+        var port = data.port;
+        addPeer(port);
+      });
+      
+      socket.on('removePeers', function(data) {
+        var ports = data.ports;
+        _.each(ports, function(port) {
+            removePeer(port);
+        });
+      });
+      
       socket.on('setup', function (data) {
         var ports = data.ports;
         _.each(ports, function(port) {
-            var portSocket = io.connect("/" + port);
-            
-            portSocket.on('log', function(args) {
-                var output = _.map(args, function(arg) {
-                   return _.isString(arg) ? arg : JSON.stringify(arg);
-                }).join(" ");
-                
-                var allLog = $("#all-log")
-                var logSoFar = allLog.text();
-                var newLog = logSoFar + "\r\n" + output;
-                allLog.text(newLog.trim());
-                
-                var portLog = $("#port-" + port + "-log");
-                var portLogSoFar = portLog.text();
-                var newPortLog = portLogSoFar + "\r\n" + output;
-                portLog.text(newPortLog.trim());
-                
-                console.log.apply(console, args);
-            });
-            
-            portSockets[port] = portSocket;
-            
-            var nav = $("#peerNav").tmpl({port: port});
-            var content = $("#peerContent").tmpl({port: port});
-            
-            $("#peer-tabs-nav").append($(nav));
-            $("#peer-tabs-content").append($(content));
-            
-            $("#client-submit-" + port).submit(function(e) {
-              e.preventDefault();
-              
-              var name = $("#client-submit-" + port + " input[name='name']").val();
-              var value = $("#client-submit-" + port + " input[name='value']").val();
-              
-              if (!name || !value) {
-                alert("Need to set both name and value");
-                return;
-              }
-              
-              var form = $(this);
-              portSocket.emit("store", {name: name, value: value}, function(resp) {
-                
-                var control = $(".control-group", form);
-                var help = $(".help-inline", form);
-                
-                var text = "";
-                if (resp.accepted) {
-                  control.addClass("success");
-                  control.removeClass("error");
-                  
-                  text = "Stored: (" + value + ", " + resp.instance + ")";
-                }
-                else {
-                  control.removeClass("success");
-                  control.addClass("error");
-                  
-                  text = "Error: " + JSON.stringify(resp);
-                }
-                
-                help.text(text);
-              });
-            });
-            
-            $("#client-fetch-" + port).submit(function(e) {
-              e.preventDefault();
-              
-              var name = $("#client-fetch-" + port + " input[name='name']").val();
-              var instance = $("#client-fetch-" + port + " input[name='instance']").val();
-              
-              if (!name || !instance) {
-                alert("Need to set both name and instance");
-                return;
-              }
-              
-              var form = $(this);
-              portSocket.emit("fetch", {name: name, instance: instance}, function(resp) {
-                
-                var control = $(".control-group", form);
-                var help = $(".help-inline", form);
-                
-                var text = "";
-                if (resp.found) {
-                  control.addClass("success");
-                  control.removeClass("error");
-                  
-                  text = "Found: " + resp.value;
-                }
-                else {
-                  control.removeClass("success");
-                  control.addClass("error");
-                  
-                  text = "Not Found";
-                  if (resp.message) {
-                    text += ": " + resp.message;
-                  }
-                }
-                
-                help.text(text);
-              });
-            });
-
-            $("#kill-" + port).click(function(e) {
-              e.preventDefault();
-              
-              portSocket.emit("kill");
-            });
-
-            $("#revive-" + port).click(function(e) {
-              e.preventDefault();
-              
-              portSocket.emit("revive");
-            });
-
-            $("#set-probability-" + port).submit(function(e) {
-              e.preventDefault();
-              
-              var probability = parseFloat($("input[name='probability']", $(this)).val() || 0.0);
-              
-              portSocket.emit("probability", probability);
-            });
+            addPeer(port);
         });
       });
     </script>

@@ -1,4 +1,4 @@
-module.exports.create = function(port, log) {
+module.exports.create = function(port, log, onPeersRemoved) {
     var express = require('express');
     var _       = require('underscore');
     var async   = require('async');
@@ -559,7 +559,12 @@ module.exports.create = function(port, log) {
             if (downedPeers.length > 0) {
                 GET_PEERS()[port].send(
                     "/removePeers",
-                    { peers: downedPeers }    
+                    { peers: downedPeers },
+                    function(err) {
+                        if (!err) {
+                            onPeersRemoved(downedPeers);
+                        }
+                    }
                 );
             }
         });

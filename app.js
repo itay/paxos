@@ -102,7 +102,11 @@ var createServer = function(port) {
   peers.push(port);
   logs.push(log);
   
-  servers.create(port, log);
+  servers.create(port, log, function(ports) { 
+    if (mainSocket) {
+      mainSocket.emit("removePeers", { ports: ports } );
+    }
+  });
   
   io.of("/" + port)
     .on('connection', function (socket) {
@@ -164,8 +168,19 @@ _.each(_.range(numServers), function(idx) {
   createServer(port);
 });
 
+var mainSocket = null;
 io.sockets.on('connection', function (socket) {
   socket.emit("setup", {ports: peers});
+  mainSocket = socket;
+  
+  socket.on("addPeer", function(data) {
+    console.log("ABC");
+    addPeer(data.peer, peers[0]);
+  });
+  
+  socket.on("removePeer", function(data) {
+    removePeers([data.peer], peers[0]);
+  });
 });
 
 var start = null;
@@ -177,25 +192,33 @@ for(var port in senders) {
   sender("/setup", {peers: peers, initialized: true}, function(err, res) {
     setupCompleteCount--;
     if(setupCompleteCount === 0) {
-      start2();
+      //start2();
     }
   });
 }
 
 var removePeers = function(ports, removeFromPort, done) {
+  done = done || function() {};
+  
   peers = _.difference(peers, ports);
   senders[removeFromPort](
     '/removePeers',
     { peers: ports },
     function(err, response, data) {
-      console.log(err, data);
-      console.log("-- PEERS REMOVED", ports)   
+      console.log("-- PEERS REMOVED", ports);
+      
+      if (mainSocket) {
+        mainSocket.emit("removePeers", {ports: ports});
+      }
+      
       done();
     }
   );
 };
 
 var addPeer = function(port, joinFromPort, done) {
+  done = done || function() {};
+  
   createServer(port);
   senders[port]("/setup", {peers: peers, initialized: false}, function(err, res) {
     console.log(" -- PEER", port, "is done setting up");
@@ -217,6 +240,11 @@ var addPeer = function(port, joinFromPort, done) {
             },
             function(err, response, data) {
               console.log(" -- AFTER INITIALIZED FOR", port);
+              
+              if (mainSocket) {
+                mainSocket.emit("addPeer", {port: port});
+              }
+              
               done();
             }
           );
