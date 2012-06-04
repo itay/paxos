@@ -440,12 +440,12 @@ module.exports.create = function(port, log) {
                 var currentPeers = _.keys(FULLY_LEARNT_VALUES["_EPOCH"][instance-1]);
                 var newPeerSet = currentPeers;
                 if (value.add) {
-                    var newPeer = value.add;
+                    var newPeer = value.add + '';
                     
                     newPeerSet.push(newPeer);
                 }
                 else {
-                    var peersToRemove = value.remove;
+                    var peersToRemove = _.map(value.remove, function(o) { return o + '' });;
                     newPeerSet = _.difference(newPeerSet, peersToRemove);
                 }
                 
@@ -763,14 +763,39 @@ module.exports.create = function(port, log) {
         
         log("Received ADD_PEER(", peer, ")");
         
-        var peers = _.keys(GET_PEERS());
-        
         // Mark the current epoch as closed
         EPOCH_CLOSED[GET_CURRENT_EPOCH()] = true;
         
         // Get the next proposal number and build the proposal
         var instance = CURRENT_INSTANCE[name]++;
         initiateProposal(name, instance, { add: peer }, function(err, result) {
+            if (err) {
+                // If there was an error, let's make it as if this never
+                // never happened
+                CURRENT_INSTANCE[name]--;
+                delete PROPOSAL_COUNTER[name];
+                
+                res.json(err);
+            }
+            else {
+                res.json(result);
+            }
+        });
+    });
+    
+    app.post('/removePeers', function(req, res) {
+        var data = req.body;
+        var name = "_EPOCH";
+        var peers = data.peers;
+        
+        log("Received REMOVE_PEERS(", peers, ")");
+        
+        // Mark the current epoch as closed
+        EPOCH_CLOSED[GET_CURRENT_EPOCH()] = true;
+        
+        // Get the next proposal number and build the proposal
+        var instance = CURRENT_INSTANCE[name]++;
+        initiateProposal(name, instance, { remove: peers }, function(err, result) {
             if (err) {
                 // If there was an error, let's make it as if this never
                 // never happened

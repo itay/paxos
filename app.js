@@ -182,6 +182,19 @@ for(var port in senders) {
   });
 }
 
+var removePeers = function(ports, removeFromPort, done) {
+  peers = _.difference(peers, ports);
+  senders[removeFromPort](
+    '/removePeers',
+    { peers: ports },
+    function(err, response, data) {
+      console.log(err, data);
+      console.log("-- PEERS REMOVED", ports)   
+      done();
+    }
+  );
+};
+
 var addPeer = function(port, joinFromPort, done) {
   createServer(port);
   senders[port]("/setup", {peers: peers, initialized: false}, function(err, res) {
@@ -202,7 +215,7 @@ var addPeer = function(port, joinFromPort, done) {
               epoch: epoch,
               peers: peers
             },
-            function() {
+            function(err, response, data) {
               console.log(" -- AFTER INITIALIZED FOR", port);
               done();
             }
@@ -213,22 +226,61 @@ var addPeer = function(port, joinFromPort, done) {
   });
 };
 
+var start3 = function() {
+  removePeers([peers[2]], peers[0], function() {
+    //senders[startPort + 1](
+    //  "/store",
+    //  {
+    //    name: "itay",
+    //    value: 600
+    //  },
+    //  function(err, response, data) {
+    //    console.log(new Date(), "---", data);
+    //  }
+    //);
+  });
+  
+  removePeers([peers[0]], peers[1], function() {
+    //senders[startPort + 1](
+    //  "/store",
+    //  {
+    //    name: "itay",
+    //    value: 600
+    //  },
+    //  function(err, response, data) {
+    //    console.log(new Date(), "---", data);
+    //  }
+    //);
+  });
+};
+
 var start2 = function() {
   var newPeer = startPort + numServers + 1;
   numServers++;
   
-  addPeer(newPeer, peers[0], function() {    
-    senders[startPort + 1](
-      "/store",
-      {
-        name: "itay",
-        value: 600
-      },
-      function(err, response, data) {
-        console.log(new Date(), "---", data);
-      }
-    );
-  });
+  
+  senders[peers[0]](
+    "/store",
+    {
+      name: "itay",
+      value: 500
+    },
+    function(err, response, data) {
+      console.log(" -- VALUE STORED");
+      addPeer(newPeer, peers[0], function() {    
+        senders[newPeer](
+          "/store",
+          {
+            name: "itay",
+            value: 600
+          },
+          function(err, response, data) {
+            console.log(new Date(), "---", data);
+          }
+        );
+      });
+    }
+  );
   
   //senders[startPort + 1](
   //  "/store",
@@ -250,10 +302,10 @@ var start2 = function() {
   //  }
   //);
   
-  var newPeer2 = newPeer + 1;
-  addPeer(newPeer2, peers[1], function() {
-    
-  });
+  //var newPeer2 = newPeer + 1;
+  //addPeer(newPeer2, peers[1], function() {
+  //  
+  //});
 }
 
 start = function() {
