@@ -211,8 +211,11 @@ var removePeers = function(ports, removeFromPort, done) {
     function(err, response, data) {
       console.log("-- PEERS REMOVED", ports);
       
-      _.each(serverInstances, function(server) {
-        server.close();
+      _.each(serverInstances, function(server, key) {
+        if (ports.indexOf(parseInt(key)) >= 0) {
+          console.log("CLOSING SERVER");
+          server.close();
+        }
       });
       
       if (mainSocket) {
