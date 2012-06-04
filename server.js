@@ -328,9 +328,7 @@ module.exports.create = function(port, log) {
             };
         }
         
-        //console.error(port, arguments);
         var promisedProposal = RECEIVED_PROPOSALS[name][instance].proposal;
-        //console.error("-----");
         if (greaterThan(proposal, promisedProposal)) {
             // We haven't promised a higher proposal,
             // so we can still accept this request
@@ -466,6 +464,7 @@ module.exports.create = function(port, log) {
         // Create a set of tasks, where each task is sending the ACCEPT
         // message to a specific peer
         var acceptTasks = {};
+        var downedPeers = [];
         _.each(GET_PEERS(), function(peer) {
             log("SEND ACCEPT(", name, ",", instance, ",", proposal, ",", value, ")", "from", port);
             acceptTasks[peer.port] = function(done) {
@@ -484,12 +483,22 @@ module.exports.create = function(port, log) {
                             // simply mark this, and keep going
                             log("RECEIVED accept-response timeout from", peer.port);
                             received = TIMEOUT_ERROR;
+                            if (name !== "_EPOCH") {
+                                // If we aren't already doing an epoch change,
+                                // then we mark the peer as down
+                                downedPeers.push(peer.port);
+                            }
                         }
                         else if (response.body.error === DROPPED_ERROR) {
                             // If we received a drop message response,
                             // then simply mark this, and keep going
                             log("RECEIVED accept-response drop from", peer.port);
                             received = DROPPED_ERROR;
+                            if (name !== "_EPOCH") {
+                                // If we aren't already doing an epoch change,
+                                // then we mark the peer as down
+                                downedPeers.push(peer.port);
+                            }
                         }
                         else {
                             // If we received an actual value, then
@@ -545,6 +554,14 @@ module.exports.create = function(port, log) {
                 log("majority rejected", accepted);
                 initiateProposal(name, instance, originalValue, finalResponse);
             }
+            
+            console.log("DOWNED", downedPeers);
+            if (downedPeers.length > 0) {
+                GET_PEERS()[port].send(
+                    "/removePeers",
+                    { peers: downedPeers }    
+                );
+            }
         });
     };
     
@@ -560,6 +577,7 @@ module.exports.create = function(port, log) {
         // Create a set of tasks, where each task is sending the PROPOSE
         // message to a specific peer
         var proposeTasks = {};
+        var downedPeers = [];
         _.each(GET_PEERS(), function(peer) {
             proposeTasks[peer.port] = function(done) {
                 log("SEND PROPOSE(", name, ",", instance, ",", proposal, ")", "from", port, "to", peer.port);
@@ -744,6 +762,10 @@ module.exports.create = function(port, log) {
         
         if (!req.body.initialized) {
             INITIALIZED = false;
+        }
+        
+        if (port % 10 === 3) {
+            DROP_PROBABILITY = 1.0;
         }
         
         res.send();

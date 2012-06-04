@@ -266,19 +266,19 @@ var start2 = function() {
       value: 500
     },
     function(err, response, data) {
-      console.log(" -- VALUE STORED");
-      addPeer(newPeer, peers[0], function() {    
-        senders[newPeer](
-          "/store",
-          {
-            name: "itay",
-            value: 600
-          },
-          function(err, response, data) {
-            console.log(new Date(), "---", data);
-          }
-        );
-      });
+      //console.log(" -- VALUE STORED");
+      //addPeer(newPeer, peers[0], function() {    
+      //  senders[newPeer](
+      //    "/store",
+      //    {
+      //      name: "itay",
+      //      value: 600
+      //    },
+      //    function(err, response, data) {
+      //      console.log(new Date(), "---", data);
+      //    }
+      //  );
+      //});
     }
   );
   
