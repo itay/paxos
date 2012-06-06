@@ -635,7 +635,6 @@ module.exports.create = function(port, log, onPeersRemoved) {
         // Create a set of tasks, where each task is sending the PROPOSE
         // message to a specific peer
         var proposeTasks = {};
-        var downedPeers = [];
         _.each(GET_PEERS(), function(peer) {
             proposeTasks[peer.port] = function(done) {
                 log("SEND PROPOSE(", name, ",", instance, ",", proposal, ")", "from", port, "to", peer.port);
@@ -814,10 +813,15 @@ module.exports.create = function(port, log, onPeersRemoved) {
             peers[peerPort] = createPeer(peerPort);
         }
         
+        // Initialize everything for the _EPOCH name,
+        // and set the initial peer set
         initializeStorageForName("_EPOCH");
         FULLY_LEARNT_VALUES["_EPOCH"][0] = peers;
         WAS_IN_EPOCH[0] = true;
         
+        // Note that we are not initialized unless
+        // explicitly set (this is to handle the difference between nodes
+        // that are in the initial peer set vs. nodes that are added later).
         if (!req.body.initialized) {
             INITIALIZED = false;
         }
@@ -842,6 +846,8 @@ module.exports.create = function(port, log, onPeersRemoved) {
         // Mark the current epoch as closed
         EPOCH_CLOSED[GET_CURRENT_EPOCH()] = true;
         
+        // Moving epochs is just doing a Paxos instance round on the special
+        // name.
         // Get the next proposal number and build the proposal
         var instance = CURRENT_INSTANCE[name]++;
         initiateProposal(name, instance, { add: peer }, function(err, result) {
@@ -869,6 +875,8 @@ module.exports.create = function(port, log, onPeersRemoved) {
         // Mark the current epoch as closed
         EPOCH_CLOSED[GET_CURRENT_EPOCH()] = true;
         
+        // Moving epochs is just doing a Paxos instance round on the special
+        // name.
         // Get the next proposal number and build the proposal
         var instance = CURRENT_INSTANCE[name]++;
         initiateProposal(name, instance, { remove: peers }, function(err, result) {
@@ -890,6 +898,12 @@ module.exports.create = function(port, log, onPeersRemoved) {
         var epoch = req.body.epoch;
         var peerPorts = req.body.peers;
         
+        // This endpoint is basically a way to distinguish between an epoch
+        // becoming alive (which can happen at an arbitrary point in time), 
+        // and an epoch joining the set of peers (i.e. it has been accepted
+        // through a Paxos vote). This is essentially equivalent to the state
+        // transfer - we simply note what epoch we joined in, and we avoid
+        // participating in anything in a prior epoch.
         log("INITIALIZING", port, req.body);
         
         // Mark us as initialized
@@ -904,12 +918,15 @@ module.exports.create = function(port, log, onPeersRemoved) {
             WAS_IN_EPOCH[i] = false;
         } 
         
+        // Create the peer senders for this epoch, and store them
         var peers = {};
         for(var i = 0; i < peerPorts.length; i++) {
             var peerPort = peerPorts[i];
             peers[peerPort] = createPeer(peerPort);
         }
         FULLY_LEARNT_VALUES["_EPOCH"][epoch] = peers;
+        
+        // Mark ourselves as being part of this epoch
         WAS_IN_EPOCH[epoch] = true;
         
         res.send();
@@ -1022,6 +1039,8 @@ module.exports.create = function(port, log, onPeersRemoved) {
         
         log("RECEIVE PROPOSE(", name, ",", instance, ",", proposal, ")");
         
+        // If we get an epoch related message, just mark our epoch as
+        // closed.
         if (name === "_EPOCH" && !EPOCH_CLOSED[GET_CURRENT_EPOCH()]) {
             log("  ", "closing down epoch", GET_CURRENT_EPOCH());
             EPOCH_CLOSED[GET_CURRENT_EPOCH()] = true;
@@ -1051,6 +1070,8 @@ module.exports.create = function(port, log, onPeersRemoved) {
         
         log("RECEIVE ACCEPT(", name, ",", instance, ",", proposal, ",", value, ")");
         
+        // If we get an epoch related message, just mark our epoch as
+        // closed.
         if (name === "_EPOCH" && !EPOCH_CLOSED[GET_CURRENT_EPOCH()]) {
             log("  ", "closing down epoch", GET_CURRENT_EPOCH());
             EPOCH_CLOSED[GET_CURRENT_EPOCH()] = true;
