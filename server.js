@@ -55,6 +55,7 @@ module.exports.create = function(port, log, onPeersRemoved) {
     // Figure out if a proposal is greater than another
     var greaterThan = function(left, right) {
         // A proposal is greater than or equal to another if:
+        // 0. If it is from an older epoch, it is automatically less than
         // 1. it is the same (both the number and peer index are equal)
         // 2. The number is higher
         // 3. The number is the same but the peer is higher
@@ -155,6 +156,8 @@ module.exports.create = function(port, log, onPeersRemoved) {
     // Store whether or not we are initialized
     var INITIALIZED = true;
     
+    // Get the current epoch. This is really the last epoch for which we have
+    // a value (a set of nodes)
     var GET_CURRENT_EPOCH = function() {
         var epochs = _.keys(FULLY_LEARNT_VALUES["_EPOCH"]) || [];
         epochs.sort();
@@ -162,6 +165,7 @@ module.exports.create = function(port, log, onPeersRemoved) {
         return epochs[epochs.length - 1];
     };
     
+    // Get the peers for the current epoch
     var GET_PEERS = function() {
         var currentEpoch = GET_CURRENT_EPOCH();
         var peers = FULLY_LEARNT_VALUES["_EPOCH"][currentEpoch];
@@ -169,24 +173,35 @@ module.exports.create = function(port, log, onPeersRemoved) {
         return peers;
     };
     
+    // Get the number of peers in the current epoch
     var GET_NUM_PEERS = function() { 
         var peers = GET_PEERS() || {};
         return _.keys(peers).length;
     };
     
+    // Get whether or not a specific peer is part of an epoch (i.e. can it
+    // participate in votes for a value in a particular epoch)
     var IS_IN_EPOCH = function(peer) { 
         var peers = GET_PEERS();
         
-        // A peer is not in the epoch if it is not initialized
+        // A peer is not in the epoch if the current peer is not initialized
         return INITIALIZED && _.keys(peers).indexOf(peer + '') >= 0;
     };
     
+    // Whether or not the current epoch is closed, so that we can't accept
+    // any new values
     var IS_EPOCH_CLOSED = function() {
         var currentEpoch = GET_CURRENT_EPOCH();
         return !!EPOCH_CLOSED[currentEpoch];
     };
     
     var handlePropose = function(name, instance, proposal) {
+        // If either:
+        // - We (the current peer) weren't part of an epoch (i.e. we joined
+        //      later).
+        // - The peer we are getting a proposal from wasn't part of a particular
+        //   epoch
+        // Then we reject things and note that it is due to epoch incompatibility
         if (!WAS_IN_EPOCH[proposal.epoch] || !IS_IN_EPOCH(proposal.peer)) {
             log("  ", proposal.peer, "not in epoch");
             return {
@@ -318,7 +333,13 @@ module.exports.create = function(port, log, onPeersRemoved) {
         }
     };
     
-    var handleAccept = function(name, instance, proposal, value) {        
+    var handleAccept = function(name, instance, proposal, value) {      
+        // If either:
+        // - We (the current peer) weren't part of an epoch (i.e. we joined
+        //      later).
+        // - The peer we are getting a proposal from wasn't part of a particular
+        //   epoch
+        // Then we reject things and note that it is due to epoch incompatibility  
         if (!WAS_IN_EPOCH[proposal.epoch] || !IS_IN_EPOCH(proposal.peer)) {
             log("  ", proposal.peer, "not in epoch");
             return {
@@ -328,7 +349,12 @@ module.exports.create = function(port, log, onPeersRemoved) {
             };
         }
         
-        
+        // We could have a case where we a STORE and and an ADD_PEER were
+        // competing, and we thought the epoch was already closed, so we rejected
+        // the proposal. However a quorum of accepts did accept the proposal, so
+        // we now have to accept it. Since we know we can't accept anything 
+        // anyway, we just go ahead and accept it. If however we do have a
+        // proposal for this instance, we use that.
         var received = RECEIVED_PROPOSALS[name][instance];
         var promisedProposal = received ? received.proposal : { peer: -1, number: -1, epoch: -1 };
         
@@ -409,7 +435,7 @@ module.exports.create = function(port, log, onPeersRemoved) {
         else {
             // First time we've seen this value, so we set it to 1
             numAcceptors = learned[value] = 1;
-        }             
+        }
         
         if (numAcceptors >= Math.floor((GET_NUM_PEERS() / 2) + 1)) {
             // More than half the acceptors have accepted
@@ -436,11 +462,20 @@ module.exports.create = function(port, log, onPeersRemoved) {
                 FULLY_LEARNT_LISTENERS[name][instance] = null;
             }
             
+            // We do some special handling for learnt values that were part of
+            // an epoch round. This is more or less just extracing a delta
+            // description (e.g. ADD X or REMOVE Y,Z) into a final node
+            // list
             if (name === "_EPOCH") {
                 log("  ", "learnt new epoch, setting up peers");
                 
+                // Since we send deltas, we always look at the previous instance
+                // (which is the previous epoch) to get the previous complete
+                // node list, and then apply the delta
                 var currentPeers = _.keys(FULLY_LEARNT_VALUES["_EPOCH"][instance-1]);
                 var newPeerSet = currentPeers;
+                
+                // Either add or remove the delta
                 if (value.add) {
                     var newPeer = value.add + '';
                     
@@ -451,12 +486,18 @@ module.exports.create = function(port, log, onPeersRemoved) {
                     newPeerSet = _.difference(newPeerSet, peersToRemove);
                 }
                 
+                // Recreate our "sending" function for each peer
                 var peers = {};
                 for(var i = 0; i < newPeerSet.length; i++) {
                     var peerPort = newPeerSet[i];
                     peers[peerPort] = createPeer(peerPort);
                 }
+                
+                // Store it in the final store
                 FULLY_LEARNT_VALUES[name][instance] = peers;
+                
+                // And note that we were part of this epoch (since we learnt
+                // about values for it).
                 WAS_IN_EPOCH[instance] = true;
                 
                 log("  ", "new peer set:" , newPeerSet);
@@ -559,7 +600,15 @@ module.exports.create = function(port, log, onPeersRemoved) {
                 initiateProposal(name, instance, originalValue, finalResponse);
             }
             
-            console.log("DOWNED", downedPeers);
+            // OK, we've decided whether a proposal was accepted, we re-issued
+            // it if it failed, etc. Now we take care of any downed peers. What
+            // we're saying here is that if any peer was down, we will try and
+            // kick it out. We'll just send ourselves a message on the 
+            // /removePeers endpoint to do so.
+            // 
+            // A possible issue here is if more than half the peers are truly
+            // down. I believe we will then infinitely loop trying to remove
+            // them.
             if (downedPeers.length > 0) {
                 GET_PEERS()[port].send(
                     "/removePeers",
