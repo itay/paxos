@@ -328,7 +328,10 @@ module.exports.create = function(port, log, onPeersRemoved) {
             };
         }
         
-        var promisedProposal = RECEIVED_PROPOSALS[name][instance].proposal;
+        
+        var received = RECEIVED_PROPOSALS[name][instance];
+        var promisedProposal = received ? received.proposal : { peer: -1, number: -1, epoch: -1 };
+        
         if (greaterThan(proposal, promisedProposal)) {
             // We haven't promised a higher proposal,
             // so we can still accept this request
