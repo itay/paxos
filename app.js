@@ -205,7 +205,7 @@ for(var port in senders) {
   sender("/setup", {peers: peers, initialized: true}, function(err, res) {
     setupCompleteCount--;
     if(setupCompleteCount === 0) {
-      start2();
+      //start2();
     }
   });
 }
@@ -317,7 +317,7 @@ var start2 = function() {
     console.log("-- PEER ADDED");
   }, function() {
   
-    senders[peers[0]](
+    /*senders[peers[0]](
       "/store",
       {
         name: "itay",
@@ -339,7 +339,7 @@ var start2 = function() {
         //});
         console.log("-- VALUE STORED")
       }
-    );
+    );*/
   });
   
   //senders[startPort + 1](
@@ -362,10 +362,10 @@ var start2 = function() {
   //  }
   //);
   
-  //var newPeer2 = newPeer + 1;
-  //addPeer(newPeer2, peers[1], function() {
-  //  
-  //});
+  var newPeer2 = newPeer + 1;
+  addPeer(newPeer2, peers[0], function() {
+    
+  });
 }
 
 start = function() {
