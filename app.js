@@ -76,8 +76,8 @@ var pad = function(number, length) {
 }
 
 var numNotStarted = numServers;
-var sockets = [];
-var logs = [];
+var sockets = {};
+var logs = {};
 var peers = [];
 var serverInstances = {};
 
@@ -101,19 +101,32 @@ var createServer = function(port) {
   }
   
   peers.push(port);
-  logs.push(log);
+  logs[port] = log;
   
   serverInstances[port] = servers.create(port, log, function(ports) { 
+    ports = _.map(ports, function(port) { return parseInt(port)});
+    
     if (mainSocket) {
       mainSocket.emit("removePeers", { ports: ports } );
     }
     
-    _.each(serverInstances, function(server, key) {
-      if (ports.indexOf(parseInt(key)) >= 0) {
+    _.each(ports, function(port) {
+      if (serverInstances.hasOwnProperty(port)) {
         console.log("CLOSING SERVER");
-        server.close();
+        serverInstances[port].close();
+        delete serverInstances[port];
+      }
+      
+      if (sockets.hasOwnProperty(port)) {
+        console.log(sockets[port]);
+        delete sockets[port];
+      }
+      
+      if (logs.hasOwnProperty(port)) {
+        delete logs[port];
       }
     });
+    
     
     peers = _.difference(peers, ports);
   });
