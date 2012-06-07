@@ -266,6 +266,15 @@ looking for the line "UNCOMMENT", and commenting the preceding line - it will
 run a test that will have two node adds happening simulatenously from different
 origin nodes.
 
+## Diff
+
+It is actually incredibly educational to look at the diff between the two
+projects - the only interesting file is `server.js`, as it implements the Paxos
+server. `app.js` is merely the environment setup and dealing with the UI.
+
+You can see the diff here:
+https://github.com/itay/paxos/compare/reconfigure#diff-3
+
 ## Questions
 
 If you have any questions or problems running things, please do get in touch!
