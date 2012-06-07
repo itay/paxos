@@ -1,4 +1,4 @@
-# Paxos with Reconfiguration - CSEP590 Project 1
+# Paxos with Reconfiguration - CSEP590 Project 2
 
 This is an implementation of Paxos with Reconfiguration by Itay Neeman (itay) 
 for CSEP590.
@@ -162,3 +162,110 @@ implementation looks like this:
         res.send();
     });
     
+The above mechanism allows us to need to transfer as little state as possible,
+and the new node is functional as soon as it receives the `/initialize` command:
+it can now store and fetch values, even values from instances that it did not 
+know about. This is because "fetches" occur by simulating a Paxos instance, 
+which happen in the current epoch, so participation is allowed.
+    
+### Other architectural notes
+
+There were a couple of other small notes that I thought are worth mentioning:
+
+#### Epochs get closed
+
+As soon as a peer gets an epoch related message (i.e. any Paxos message for the 
+name _EPOCH), it marks its epoch as closed. This has a single effect: any
+proposals for a new instance are automatically rejected. This allows us to
+continue operating on previous rounds, but not start any new rounds.
+
+#### Learning new peer sets
+
+The learning mechanism has not changed, but the learner logic does recognize
+that it is learning a peer set, and does some extra transformation on the 
+values. For example, it will apply the delta to the previous peer set (as noted
+above). It will also initialize utility functions to send data to each of the
+peers. This is only done when a value is fully learnt (reusing the definition
+from the first assignment).
+
+#### Accepting an unseen proposal
+
+The implementation led itself to an interesting edge condition. Imagine that you
+have peers A,B,C. B wants to add node Y, so it marks its epoch as closed, and
+initiates an epoch Paxos instance by sending PROPOSE messages to A, B and C. At
+the same time, A wants to store value 1234 for some name (say FOO), which it also
+does by initiating a Paxos instance for that name. Say A and C get the 
+PROPOSE(INSTANCE=1, PROPOSAL=1, VALUE=1234) before they receive the ADD_NODE
+proposal from B, and they promise to honor it. When B receives it of course 
+rejects it, as the epoch is already closed as far as it is concerned. However,
+since a quorum returned positive promises to the proposal, A goes ahead to send
+ACCEPT messages to the three nodes. As such, B now gets an ACCEPT message for
+a proposal it has never seen before, so it may get confused (and indeed it did!).
+
+The solution here is to basically say that an unseen proposal is equal to the
+minimum possible one (PEER=-1, PROPOSAL=-1), and so we should automatically
+accept it and send back a positive acceptance. This is because this proposal
+managed to "sneak" in while the epoch change was under way, which is perfectly
+reasonable, and this has no effect on correctness. I thought this was an
+interesting condition.
+
+## Known Issues
+
+I actually fixed an issue I thought I had in my previous implementation where I 
+thought that I was skipping instance numbers. Turned out this was just due to
+JS type coercion, so while a bug, it was not a Paxos logic bug.
+
+There is one known issue that I want to point to: while nodes competing with 
+each other works just fine (i.e. nodes can both propose values, or change the
+epoch), and only one winner will be chosen, if a node tries to compete with
+itself, bad things may happen.
+
+This happens because of how I implemented Paxos. Specifically, when a `/store`,
+`/addPeer` or `/removePeers` command is received, we opportunistically assign
+it the current instance and increment our instance counter. However, if two
+commands come to the same node before the other succeeded, and the earlier
+command fails, we will get into a case where we have a "hole" in our instance
+numbers (i.e. an instance with no value assigned to it). This is not a 
+correctness issue, but my implementation assumed that this would not be the
+case, and such can't handle those holes. 
+
+As such, try not to perform a `/store` on the same node before the previous one
+succeeded. As noted, two nodes can compete just fine. The fix here is relatively
+simple, but I figured this out relatively late and it didn't seem it was worth
+the risk of fixing it (as it would be a relatively intrusive change).
+
+I have tested adding/removing nodes at the same time as storing (with both 
+orderings), adding two nodes simulatenously through different existing peers,
+conflicting removals, conflicting add/remove (e.g. node X adding Y, node Z 
+removing X), and everything works just fine, just because Paxos works and
+ensures that only one winner is chosen.
+
+## UI
+
+As before, adding and removing nodes can be done through the UI. To add a node,
+simply enter a port number of the peer you want to add. That peer will be 
+instanced dynamically and added (you can see the Paxos logs to see how this 
+works). To remove a single node, you can simply choose to remove it from the UI
+as well by entering the port number.
+
+You can also remove multiple nodes at once by "killing" them in the UI, and then
+sending a store or fetch request from the UI. The failure detector will kick in,
+and remove all the dead nodes. 
+
+Note that while I've tested adding/removing the same node over and over again,
+it's always possible that the OS will not be happy about the port reuse and 
+might give an error, so I suggest using incrementing port numbers.
+
+## Testing
+
+I've tested the implementation beyond the UI, but I kept changing the tests
+(i.e. just changing a single test - bad software engineering, I know!), so
+it's not really a runnable test suite. It is hard to test from the UI what 
+happens from competing nodes. You can see an example for these tests by 
+looking for the line "UNCOMMENT", and commenting the preceding line - it will
+run a test that will have two node adds happening simulatenously from different
+origin nodes.
+
+## Questions
+
+If you have any questions or problems running things, please do get in touch!
