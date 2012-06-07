@@ -218,6 +218,7 @@ for(var port in senders) {
   sender("/setup", {peers: peers, initialized: true}, function(err, res) {
     setupCompleteCount--;
     if(setupCompleteCount === 0) {
+      // UNCOMMENT TO ENABLE TESTING COMPETING PEER ADDS
       //start2();
     }
   });
@@ -327,7 +328,7 @@ var start2 = function() {
   
   
   addPeer(newPeer, peers[1], function() {
-    console.log("-- PEER ADDED");
+    console.log("-- PEER 1 ADDED");
   }, function() {
   
     /*senders[peers[0]](
@@ -377,7 +378,7 @@ var start2 = function() {
   
   var newPeer2 = newPeer + 1;
   addPeer(newPeer2, peers[0], function() {
-    
+    console.log("-- PEER 2 ADDED");
   });
 }
 
